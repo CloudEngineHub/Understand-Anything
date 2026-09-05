@@ -23,6 +23,7 @@ const fingerprintScript = join(skillDir, 'build-fingerprints.mjs');
 const prepareScript = join(skillDir, 'prepare-incremental.mjs');
 const finalizeScript = join(skillDir, 'finalize-incremental.mjs');
 const mergeScript = join(skillDir, 'merge-batch-graphs.py');
+const retryScript = join(skillDir, 'prepare-symbol-retry.mjs');
 
 const python = (() => {
   for (const command of ['python3', 'python']) {
@@ -230,6 +231,64 @@ afterEach(async () => {
 });
 
 describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
+  it.each(['success', 'failure'])('retries only affected files once, preserves other results, and handles retry %s', outcome => {
+    const f = symbolFixture(2);
+    writeProjectFile(f.root, 'src/a.ts', f.source([...f.names, 'added']));
+    writeProjectFile(f.root, 'src/b.ts', 'export function b() { return 2; }\n');
+    const head = commit(f.root, 'change two files');
+    const before = f.persisted();
+    prepare(f.root, f.baseCommit);
+    const otherFile = { ...f.fileNode, id: 'file:src/b.ts', filePath: 'src/b.ts', name: 'b.ts' };
+    const otherFunction = {
+      ...f.methodNodes[0], id: 'function:src/b.ts:b', filePath: 'src/b.ts', name: 'b', summary: 'Fresh analysis to retain',
+    };
+    const obsolete = { ...f.methodNodes[0], id: 'function:src/a.ts:obsolete', name: 'obsolete' };
+    f.write('batch-7-part-1.json', { nodes: [f.fileNode, f.classNode, f.methodNodes[0], otherFile], edges: [] });
+    f.write('batch-7-part-2.json', { nodes: [otherFunction, obsolete], edges: [
+      { source: otherFile.id, target: otherFunction.id, type: 'contains', direction: 'forward', weight: 1 },
+      { source: otherFunction.id, target: obsolete.id, type: 'calls', direction: 'forward', weight: 1 },
+    ] });
+    expect(spawnSync(python, [mergeScript, f.root]).status).toBe(1);
+    run(process.execPath, [retryScript, f.root], f.root);
+    const retry = f.read('incremental-symbol-retry.json');
+    expect(retry.filesToReanalyze).toEqual(['src/a.ts']);
+    expect(retry.batches.flatMap(batch => batch.files.map(file => file.path))).toEqual(['src/a.ts']);
+    expect(retry.batches[0].previousSymbols.map(node => node.id)).toContain(f.methodNodes[1].id);
+    expect(retry.batches[0].previousSymbols.some(node => 'summary' in node)).toBe(false);
+    for (const name of ['batch-7-part-1.json', 'batch-7-part-2.json', 'assembled-graph.json']) {
+      expect(() => f.read(name)).toThrow();
+    }
+    const retained = f.read('batch-0.json');
+    expect(retained.nodes.find(node => node.id === otherFunction.id)?.summary).toBe(otherFunction.summary);
+    expect(retained.nodes.some(node => node.filePath === 'src/a.ts')).toBe(false);
+    expect(retained.edges.some(edge => edge.target === obsolete.id)).toBe(false);
+    expect(retained.edges.some(edge => edge.target === otherFunction.id)).toBe(true);
+    for (const batch of retry.batches) f.write(`batch-${batch.batchIndex}.json`, {
+      nodes: [f.fileNode, f.classNode, ...(outcome === 'success' ? f.methodNodes : [f.methodNodes[0]])], edges: [],
+    });
+    const merged = spawnSync(python, [mergeScript, f.root], { encoding: 'utf8' });
+    const finalized = spawnSync(process.execPath, [finalizeScript, f.root], { encoding: 'utf8' });
+    if (outcome === 'success') {
+      expect(merged.status, merged.stderr).toBe(0);
+      expect(finalized.status, finalized.stderr).toBe(0);
+      const graph = JSON.parse(f.persisted()[0]);
+      expect(graph.project.gitCommitHash).toBe(head);
+      expect(graph.nodes.find(node => node.id === otherFunction.id)?.summary).toBe(otherFunction.summary);
+      expect(graph.nodes.some(node => node.id === obsolete.id)).toBe(false);
+    } else {
+      expect(merged.status).toBe(1);
+      expect(finalized.status).toBe(1);
+      expect(f.persisted()).toEqual(before);
+      const secondRetry = spawnSync(process.execPath, [retryScript, f.root], { encoding: 'utf8' });
+      expect(secondRetry.status).toBe(1);
+      expect(secondRetry.stderr).toContain('already used');
+      prepare(f.root, f.baseCommit);
+      expect(f.read('incremental-symbol-retry.json').attempt).toBe(1);
+      expect(spawnSync(process.execPath, [retryScript, f.root]).status).toBe(1);
+      expect(f.persisted()).toEqual(before);
+    }
+  });
+
   it('lists all 19 missing methods and blocks merge and direct finalize without advancing any baseline', () => {
     const f = symbolFixture();
     writeProjectFile(f.root, 'src/a.ts', f.source([...f.names, 'added']));

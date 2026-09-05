@@ -518,8 +518,8 @@ async function main() {
     throw new Error('A valid previous graph is required for incremental symbol protection');
   }
   if (existingSnapshot?.baseCommit !== baseCommit || !existingSnapshot.graph) {
-    if (graph?.project?.gitCommitHash === headCommit && headCommit !== baseCommit) {
-      throw new Error('Previous graph has already advanced without a symbol baseline; cannot safely retry');
+    if (graph?.project?.gitCommitHash && graph.project.gitCommitHash !== baseCommit) {
+      throw new Error('Previous graph commit does not match the requested base and no symbol baseline exists; cannot safely retry');
     }
     atomicWriteJson(baselineSnapshotPath, { baseCommit, scan: baselineScan, graph: baselineGraph });
   }
@@ -541,15 +541,9 @@ async function main() {
   }
   const currentInventory = sorted(currentScan.files.map(file => file.path));
   const currentInventorySet = new Set(currentInventory);
-  // If a previous attempt saved the graph but failed before fingerprints/meta,
-  // its project hash is already HEAD. Do not let that partially advanced graph
-  // redefine the previous inventory; the preserved scan + old fingerprints are
-  // the retry baseline. A graph still tied to baseCommit remains useful for
-  // recovering files omitted by an older scan/fingerprint format.
-  const graphMatchesUncommittedHead =
-    graph?.project?.gitCommitHash === headCommit && headCommit !== baseCommit;
-  const inventoryGraph = graphMatchesUncommittedHead ? {} : graph;
-  const oldInventory = inventoryFrom(baselineScan, inventoryGraph, oldFingerprints);
+  // The durable graph may have advanced before a failed fingerprints/meta save.
+  // Use only the preserved graph, even when retrying against a different HEAD.
+  const oldInventory = inventoryFrom(baselineScan, baselineGraph, oldFingerprints);
   const oldInventorySet = new Set(oldInventory);
   const trackedPaths = new Set(parseNulPaths(run(
     'git',

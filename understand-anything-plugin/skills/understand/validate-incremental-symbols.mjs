@@ -22,6 +22,10 @@ async function getCore() {
   return corePromise;
 }
 
+export async function getIntermediateDir(projectRoot) {
+  return join((await getCore()).resolveUaDir(projectRoot), 'intermediate');
+}
+
 export function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
@@ -167,7 +171,8 @@ export function loadSymbolContext(projectRoot, intermediateDir) {
     || !Array.isArray(baseline.files)) throw new Error('Symbol baseline does not match the incremental plan');
   const paths = baseline.files.map(file => file.filePath).sort();
   if (JSON.stringify(paths) !== JSON.stringify([...plan.filesToReanalyze].sort())
-    || paths.some(path => !normalizePath(path)) || new Set(paths).size !== paths.length) {
+    || paths.some(path => !normalizePath(path) || (plan.deletedFiles ?? []).includes(path))
+    || new Set(paths).size !== paths.length) {
     throw new Error('Symbol baseline file inventory does not match the incremental plan');
   }
   if (git(projectRoot, ['rev-parse', 'HEAD']).trim() !== plan.headCommit) {
@@ -190,7 +195,6 @@ export async function validateIncrementalSymbols(projectRoot, { graph, intermedi
     report.graphHash = createHash('sha256').update(JSON.stringify(graph)).digest('hex');
     let parser;
     for (const previous of baseline.files) {
-      if ((plan.deletedFiles ?? []).includes(previous.filePath)) continue;
       const nodes = graph.nodes.filter(node => normalizePath(node.filePath) === previous.filePath);
       const ids = new Set(nodes.map(node => node.id));
       const current = { nodes, edges: graph.edges.filter(edge => ids.has(edge.source) && ids.has(edge.target)) };
