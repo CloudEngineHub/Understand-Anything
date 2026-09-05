@@ -20,6 +20,7 @@ const compare = (oldNodes, newNodes, oldSource, newSource) => compareFileSymbols
 describe('incremental symbol matching', () => {
   it.each([
     ['rb', 'class A\n def run; end\nend\n', 'class A\n def keep; end\n define_method(("r" + "un").to_sym) { 1 }\nend\n'],
+    ['rb', 'class A\n def run; end\nend\n', 'class A\n def keep; end\n attr(("r" + "un").to_sym)\nend\n'],
     ['rb', 'class A\n def run; end\nend\n', 'class A\n def keep; end\n send(:define_method, ("r" + "un").to_sym) { 1 }\nend\n'],
     ['py', 'class A:\n def run(self): pass\n', 'class A:\n def keep(self): pass\nsetattr(A, "r" + "un", lambda self: None)\n'],
     ['py', 'class A:\n def run(self): pass\n', 'class A:\n def keep(self): pass\ninstall = setattr\ninstall(A, "r" + "un", lambda self: None)\n'],

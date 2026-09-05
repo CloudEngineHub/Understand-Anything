@@ -234,6 +234,7 @@ afterEach(async () => {
 describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
   it.each([
     ['rb', 'class A\n def run; end\nend\n', 'class A\n def keep; end\n define_method(("r" + "un").to_sym) { 1 }\nend\n'],
+    ['rb', 'class A\n def run; end\nend\n', 'class A\n def keep; end\n attr(("r" + "un").to_sym)\nend\n'],
     ['py', 'class A:\n def run(self): pass\n', 'class A:\n def keep(self): pass\nsetattr(A, "r" + "un", lambda self: None)\n'],
   ])('blocks publication of omitted runtime-installed %s methods', (extension, oldSource, newSource) => {
     const path = `src/dynamic.${extension}`;

@@ -309,7 +309,7 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
         for (const name of ["eval", "Function"]) runtimeInstallers.add(name);
       }
       if (extractor.languageIds.includes("ruby")) {
-        for (const name of ["define_method", "define_singleton_method", "alias_method", "attr_accessor", "attr_reader",
+        for (const name of ["define_method", "define_singleton_method", "alias_method", "attr", "attr_accessor", "attr_reader",
           "attr_writer", "class_eval", "module_eval", "instance_eval", "class_exec", "module_exec", "instance_exec",
           "eval", "send", "public_send", "__send__"]) runtimeInstallers.add(name);
       }
