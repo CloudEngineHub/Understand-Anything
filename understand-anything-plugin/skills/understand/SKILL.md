@@ -212,6 +212,7 @@ Determine whether to run a full analysis or incremental update.
    - `$UA_DIR/intermediate/scan-result.json`
    - `$UA_DIR/intermediate/changed-files.json`
    - `$UA_DIR/intermediate/batch-existing.json` for partial/architecture updates
+   - `$UA_DIR/intermediate/incremental-symbol-baseline.json`, the previous node inventory for reanalyzed files, bound to the base/head commits
 
    Read `incremental-plan.json` and store its `action`, `filesToReanalyze`, `deletedFiles`, `rerunArchitecture`, and `rerunTour` values. Follow this gate:
 
@@ -399,7 +400,7 @@ Include the script's warnings in `$PHASE_WARNINGS` for the reviewer.
 
 `prepare-incremental.mjs` has already refreshed the complete file inventory and `importMap`, written the exact analyzer list, and pruned changed/deleted paths from the old graph into `batch-existing.json`.
 
-1. If `filesToReanalyze` is non-empty, dispatch file-analyzer only for the batches from the incremental `batches.json`, using the same prompt template as the full path. Never add `deletedFiles`, `cosmeticFiles`, `ignoredFiles`, or `generatedArtifactFiles` to a prompt.
+1. If `filesToReanalyze` is non-empty, dispatch file-analyzer only for the batches from the incremental `batches.json`, using the same prompt template as the full path. Include `previousSymbols`: the function/class/method node checklist for those files from `incremental-symbol-baseline.json` (IDs, names, types, paths, line ranges, and class containment). Existing symbols that still exist must survive significance filtering; regenerate their semantics from current source. Never add `deletedFiles`, `cosmeticFiles`, `ignoredFiles`, or `generatedArtifactFiles` to a prompt.
 2. If `filesToReanalyze` is empty, dispatch no agent and create no new batch file.
 3. Run the merge script in both cases:
 
@@ -407,7 +408,19 @@ Include the script's warnings in `$PHASE_WARNINGS` for the reviewer.
    python "<SKILL_DIR>/merge-batch-graphs.py" "$PROJECT_ROOT"
    ```
 
-The merge combines `batch-existing.json` with any fresh batch output. Its import recovery reads the already-refreshed `scan-result.json`, so added and removed imports are reflected during this same run. Verify `assembled-graph.json` exists before continuing.
+The merge combines `batch-existing.json` with any fresh batch output. Its import recovery reads the already-refreshed `scan-result.json`, so added and removed imports are reflected during this same run. Require a successful exit as well as `assembled-graph.json` before continuing. A failed merge can deliberately leave an incomplete candidate for diagnosis.
+
+**Symbol-loss gate and one targeted retry:** Merge invokes `validate-incremental-symbols.mjs`. Read `incremental-symbol-report.json`: it reports per-file before/after counts and missing node IDs/names even when counts stay equal. Missing functions, classes, and methods (including `classes[].methods`) are classified against base/current source with the same strict parser. Only confirmed source deletions are allowed; still-present and unknown symbols block publication.
+
+When the report has `unresolvedFiles`, prepare exactly one repair:
+
+```bash
+node "<SKILL_DIR>/prepare-symbol-retry.mjs" "$PROJECT_ROOT"
+```
+
+This helper revalidates the candidate, records attempt 1/1 for the base/head commits, removes the affected files' new contributions and their incident edges, clears old numeric batch shards, and preserves other merged results in `batch-0.json`. Dispatch only `batches[]` from `incremental-symbol-retry.json`, using each batch's `files`, `batchIndex`, `batchImportData`, `neighborMap`, `previousSymbols`, and `missingSymbols`. Use the normal file-analyzer prompt and output names. The repair must reanalyze each affected file completely, not just append missing nodes. Then rerun merge. Do not rerun prepare to obtain another retry; the attempt remains used for those commits.
+
+If repair preparation, the repair dispatch, or the second merge fails, **STOP** and retain diagnostics. Do not publish or advance `knowledge-graph.json`, `fingerprints.json`, or `meta.json`. Never concatenate old nodes or old semantic edges into the candidate to satisfy the gate. Other merge failures without eligible unresolved files stop immediately. On success, continue to the applicable architecture/tour phases.
 
 ---
 
@@ -606,7 +619,7 @@ After the applicable Phase 4/5 work is complete, finalize either incremental act
 node "<SKILL_DIR>/finalize-incremental.mjs" "$PROJECT_ROOT"
 ```
 
-This helper validates/deduplicates nodes and edges, reconciles layers/tour, atomically saves the graph, patches only changed fingerprints while preserving all others, removes deleted fingerprints, and only then advances `meta.json`.
+This helper validates/deduplicates nodes and edges, reconciles layers/tour, and independently reruns the shared symbol validator on the exact graph to be saved. It then atomically saves the graph, patches only changed fingerprints while preserving all others, removes deleted fingerprints, and only then advances `meta.json`. A cached successful merge report cannot bypass the save check. If symbol loss is first detected here, use the same one-retry procedure above, rerun merge and any required architecture/tour phases, then finalize again; if the retry was already used or remains unresolved, **STOP** with the old graph and baselines intact.
 
 - Without `--review`, report the incremental summary and **STOP**. Do not run Phase 6 or the full-save Phase 7; this is what prevents the ordinary local update from paying for whole-graph review.
 - With `--review`, copy the newly saved `$UA_DIR/knowledge-graph.json` to `$UA_DIR/intermediate/assembled-graph.json`, then continue to the full graph-reviewer path in Phase 6. Do not run the inline default reviewer.
