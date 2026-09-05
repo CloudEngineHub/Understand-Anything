@@ -314,7 +314,7 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
           || (methodName?.type === "string" && methodName.text.includes("\\"))) {
           hasUnresolvedNames = true;
         }
-        if (!hasUnresolvedNames && ["typescript", "javascript"].includes(langKey!)
+        if (!hasUnresolvedNames && extractor.languageIds.some(id => id === "typescript" || id === "javascript")
           && ["assignment_expression", "augmented_assignment_expression"].includes(node.type)) {
           // Methods can also be installed through prototype/object writes.
           // Inspect the entire target for destructuring and wrapped accesses;

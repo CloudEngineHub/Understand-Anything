@@ -18,6 +18,16 @@ const compare = (oldNodes, newNodes, oldSource, newSource) => compareFileSymbols
 );
 
 describe('incremental symbol matching', () => {
+  it.each(['ts', 'tsx', 'js', 'jsx', 'mts', 'cts', 'mjs', 'cjs'])('rejects computed assignment deletion evidence in .%s', extension => {
+    const filePath = `src/a.${extension}`;
+    const before = parser.analyzeFileStrict(filePath, 'class A { run() {} }');
+    const after = parser.analyzeFileStrict(filePath, 'class A { keep() {} }; A.prototype["r" + "un"] = function() {};');
+    expect(before.status).toBe('succeeded');
+    expect(after.status).toBe('succeeded');
+    const previous = graph([node('A.run', { filePath, id: `function:${filePath}:A.run` })]);
+    expect(compareFileSymbols(previous, graph([]), before, after).missing[0].status).toBe('unknown');
+  });
+
   it.each([
     ['go', 'Run', 'package p\ntype A struct{}\ntype B struct{}\n', owner => `func (x ${owner}) Run() {}\n`, 'func Run() {}\n'],
     ['rs', 'run', 'struct A;\nstruct B;\n', owner => `impl ${owner} { fn run(&self) {} }\n`, 'fn run() {}\n'],

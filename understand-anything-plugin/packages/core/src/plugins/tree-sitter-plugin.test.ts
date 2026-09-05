@@ -379,7 +379,7 @@ export class Greeter {
       expect(strict.hasUnresolvedNames).toBe(false);
     });
 
-    it("exposes unresolved computed and escaped declaration names", () => {
+    it.each(["test.js", "test.jsx", "test.ts", "test.tsx"])("exposes unresolved computed and escaped names in %s", (filePath) => {
       for (const code of [
         'class A { ["r" + "un"]() {} keep() {} }',
         String.raw`class A { r\u0075n() {} keep() {} }`,
@@ -389,13 +389,13 @@ export class Greeter {
         'class A { keep() {} }; ({method: A.prototype[key]} = obj);',
         String.raw`class A { keep() {} }; A.prototype.r\u0075n = function() {};`,
       ]) {
-        const result = plugin.analyzeFileStrict("test.js", code);
+        const result = plugin.analyzeFileStrict(filePath, code);
         expect(result.status).toBe("succeeded");
         expect(result.hasUnresolvedNames).toBe(true);
       }
-      expect(plugin.analyzeFileStrict("test.js", String.raw`function keep(r\u0075n) { return r\u0075n; }`)
+      expect(plugin.analyzeFileStrict(filePath, String.raw`function keep(r\u0075n) { return r\u0075n; }`)
         .hasUnresolvedNames).toBe(false);
-      expect(plugin.analyzeFileStrict("test.js", 'class A { keep() { return this["x" + "y"]; } }')
+      expect(plugin.analyzeFileStrict(filePath, 'class A { keep() { return this["x" + "y"]; } }')
         .hasUnresolvedNames).toBe(false);
     });
   });
