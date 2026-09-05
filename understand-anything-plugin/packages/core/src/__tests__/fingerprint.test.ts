@@ -67,6 +67,19 @@ describe("contentHash", () => {
 });
 
 describe("extractFileFingerprint", () => {
+  it("classifies receiver changes as structural without a local class declaration", () => {
+    const fingerprint = (owner: string | undefined, content: string) => extractFileFingerprint("a.go", content, {
+      functions: [{ name: "Run", owner, lineRange: [2, 2], params: [] }],
+      classes: [], imports: [], exports: [],
+    });
+    const original = fingerprint("A", "func (a A) Run() {}");
+    const changed = fingerprint("B", "func (a B) Run() {}");
+    expect(changed.functions[0].owner).toBe("B");
+    expect(compareFingerprints(original, changed).changeLevel).toBe("STRUCTURAL");
+    expect(compareFingerprints(fingerprint(undefined, "old evidence"), changed).changeLevel).toBe("STRUCTURAL");
+    expect(compareFingerprints(changed, fingerprint("B", "body edit")).changeLevel).toBe("COSMETIC");
+  });
+
   it("extracts function fingerprints from analysis", () => {
     const analysis: StructuralAnalysis = {
       functions: [
