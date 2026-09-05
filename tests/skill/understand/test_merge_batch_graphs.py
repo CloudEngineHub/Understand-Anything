@@ -1446,7 +1446,7 @@ class TestUaDirResolution(unittest.TestCase):
 
 
 class TestIncrementalEdgeCandidates(unittest.TestCase):
-    def test_preserves_only_current_normalized_dangling_targets(self) -> None:
+    def test_preserves_only_current_normalized_dangling_edges(self) -> None:
         source = _file_node("src/b.ts", id="demo:file:src/b.ts")
         old_edge = {"source": source["id"], "target": "function:src/a.ts:old", "type": "calls"}
         fresh_edges = [
@@ -1464,6 +1464,8 @@ class TestIncrementalEdgeCandidates(unittest.TestCase):
         self.assertEqual(candidates, [{
             "source": "file:src/b.ts", "target": "function:src/a.ts:lost", "type": "calls",
             "direction": "bidirectional", "weight": 0.9,
+        }, {
+            "source": "missing", "target": "function:src/a.ts:lost", "type": "calls", "direction": "forward",
         }])
 
 

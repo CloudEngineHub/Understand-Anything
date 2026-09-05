@@ -251,16 +251,24 @@ export async function validateIncrementalSymbols(projectRoot, { graph, intermedi
     if (report.ok) {
       const retryPath = join(intermediateDir, 'incremental-symbol-retry.json');
       const retry = existsSync(retryPath) ? readJson(retryPath) : null;
-      if (retry?.baseCommit === plan.baseCommit && retry.headCommit === plan.headCommit
-        && Array.isArray(retry.inboundEdgeCandidates) && Array.isArray(retry.replacedFiles)) {
+      const candidatePath = join(intermediateDir, 'incremental-edge-candidates.json');
+      const currentCandidates = existsSync(candidatePath) ? readJson(candidatePath) : null;
+      if (currentCandidates && (currentCandidates.baseCommit !== plan.baseCommit
+        || currentCandidates.headCommit !== plan.headCommit || !Array.isArray(currentCandidates.edges))) {
+        throw new Error('Current edge candidates do not match the incremental plan');
+      }
+      const hasRetry = retry?.baseCommit === plan.baseCommit && retry.headCommit === plan.headCommit
+        && Array.isArray(retry.inboundEdgeCandidates) && Array.isArray(retry.replacedFiles);
+      const candidates = [...(currentCandidates?.edges ?? []), ...(hasRetry ? retry.inboundEdgeCandidates : [])];
+      if (candidates.length || hasRetry) {
         const ids = new Set(graph.nodes.map(node => node.id));
-        // A target omitted in the initial merge has no current node descriptor;
+        // An endpoint omitted in the initial merge has no current descriptor;
         // use its independently verified baseline-to-current identity mapping.
         const remap = new Map(report.files.flatMap(file => file.replacements)
           .map(({ oldId, newId }) => [oldId, newId]));
         // These descriptors belong to the initial CURRENT analysis, not the
         // old published graph. Both sides therefore map against HEAD source.
-        for (const previous of retry.replacedFiles) {
+        for (const previous of hasRetry ? retry.replacedFiles : []) {
           if (!previous.nodes.some(node => !ids.has(node.id) && symbolKind(node))) continue;
           const evidence = (await parseRevisions(previous.filePath)).head;
           const result = compareFileSymbols(previous, fileGraph(previous.filePath), evidence, evidence);
@@ -268,28 +276,32 @@ export async function validateIncrementalSymbols(projectRoot, { graph, intermedi
         }
         const edgeKey = edge => JSON.stringify([edge.source, edge.target, edge.type, edge.direction]);
         const existing = new Map(graph.edges.map((edge, index) => [edgeKey(edge), index]));
-        report.reconciledRetryEdges = 0;
-        report.droppedRetryEdges = [];
-        report.retryIdReplacements = [...remap].map(([oldId, newId]) => ({ oldId, newId }));
-        for (const candidate of retry.inboundEdgeCandidates) {
-          const edge = { ...candidate, target: remap.get(candidate.target) ?? candidate.target };
+        report.reconciledCurrentEdges = 0;
+        report.droppedCurrentEdges = [];
+        report.idReplacements = [...remap].map(([oldId, newId]) => ({ oldId, newId }));
+        for (const candidate of candidates) {
+          const edge = {
+            ...candidate,
+            source: remap.get(candidate.source) ?? candidate.source,
+            target: remap.get(candidate.target) ?? candidate.target,
+          };
           if (!ids.has(edge.source) || !ids.has(edge.target)) {
-            report.droppedRetryEdges.push({ source: candidate.source, target: candidate.target, type: candidate.type });
+            report.droppedCurrentEdges.push({ source: candidate.source, target: candidate.target, type: candidate.type });
           } else {
             const index = existing.get(edgeKey(edge));
             if (index === undefined) {
               existing.set(edgeKey(edge), graph.edges.length);
               graph.edges.push(edge);
-              report.reconciledRetryEdges++;
+              report.reconciledCurrentEdges++;
             } else if (Number(edge.weight) > Number(graph.edges[index].weight)) {
               graph.edges[index] = edge;
-              report.reconciledRetryEdges++;
+              report.reconciledCurrentEdges++;
             }
           }
         }
         // Merge's earlier dangling-edge cleanup cannot see semantic ID aliases.
         // Save the reconciled candidate before architecture/tour consumers run.
-        if (graphFromDisk && report.reconciledRetryEdges > 0) {
+        if (graphFromDisk && report.reconciledCurrentEdges > 0) {
           atomicWriteJson(join(intermediateDir, 'assembled-graph.json'), graph);
         }
         report.graphHash = createHash('sha256').update(JSON.stringify(graph)).digest('hex');
@@ -310,9 +322,9 @@ export function formatSymbolReport(report) {
     for (const node of file.missing) lines.push(`    ${node.status}: ${JSON.stringify(node.id)} (${JSON.stringify(node.name)}) — ${node.reason}`);
   }
   lines.push(...report.errors.map(error => `  Error: ${error}`));
-  if (report.reconciledRetryEdges) lines.push(`  Reconciled ${report.reconciledRetryEdges} current inbound retry edge(s)`);
-  for (const edge of report.droppedRetryEdges ?? []) {
-    lines.push(`  Dropped retry edge with unresolved endpoint: ${JSON.stringify(edge)}`);
+  if (report.reconciledCurrentEdges) lines.push(`  Reconciled ${report.reconciledCurrentEdges} current edge(s)`);
+  for (const edge of report.droppedCurrentEdges ?? []) {
+    lines.push(`  Dropped current edge with unresolved endpoint: ${JSON.stringify(edge)}`);
   }
   lines.push(report.ok ? 'Symbol validation passed' : 'Symbol validation blocked publication; baseline not advanced');
   return lines.join('\n');

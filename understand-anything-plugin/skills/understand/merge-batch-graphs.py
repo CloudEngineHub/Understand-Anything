@@ -890,14 +890,12 @@ def merge_and_normalize(
         key = (src, tgt, etype, direction)
 
         if src not in node_ids or tgt not in node_ids:
-            # Preserve normalized CURRENT analyzer evidence before the missing
-            # target is discarded. Never collect edges from batch-existing.
+            # Preserve normalized CURRENT analyzer evidence before unresolved
+            # endpoints are discarded. Never collect edges from batch-existing.
             if (
                 dangling_candidates is not None
                 and current_edge_ids is not None
                 and id(edge) in current_edge_ids
-                and src in node_ids
-                and tgt not in node_ids
             ):
                 previous = dangling_by_key.get(key)
                 if previous is None or _num(edge.get("weight", 0)) > _num(previous.get("weight", 0)):

@@ -79,7 +79,10 @@ async function main() {
     .flatMap(file => file.nodes.map(node => node.id)));
   const targetsAffectedFile = id => removedIds.has(id) || previousIds.has(id)
     || (typeof id === 'string' && [...paths].some(path => id.includes(`:${path}:`)));
-  const inboundEdgeCandidates = [...assembled.edges, ...candidates.edges].filter(edge =>
+  const sourceRemap = new Map(report.files.flatMap(file => file.replacements)
+    .map(({ oldId, newId }) => [oldId, newId]));
+  const inboundEdgeCandidates = [...assembled.edges, ...candidates.edges]
+    .map(edge => ({ ...edge, source: sourceRemap.get(edge.source) ?? edge.source })).filter(edge =>
     retainedIds.has(edge.source) && targetsAffectedFile(edge.target));
   const retained = {
     nodes: assembled.nodes.filter(node => !removedIds.has(node.id)),

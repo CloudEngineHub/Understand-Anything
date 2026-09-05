@@ -188,7 +188,7 @@ function prepare(root, baseCommit, extraArgs = []) {
   };
 }
 
-function symbolFixture(count = 20) {
+function symbolFixture(count = 20, extraFiles = {}) {
   const source = methods => `export class Service {\n${methods.map(name => `  ${name}() { return 1; }`).join('\n')}\n}\n`;
   const names = Array.from({ length: count }, (_, i) => `method${i}`);
   const fixture = setupRepository({
@@ -196,6 +196,7 @@ function symbolFixture(count = 20) {
     'src/b.ts': 'export const b = 1;\n',
     'src/c.ts': 'export const c = 1;\n',
     'src/d.ts': 'export const d = 1;\n',
+    ...extraFiles,
   });
   const { root } = fixture;
   const dataDir = join(root, '.ua');
@@ -231,6 +232,40 @@ afterEach(async () => {
 });
 
 describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
+  it('reconciles accepted replacement IDs on the first pass without requiring a retry', () => {
+    const f = symbolFixture(2, { 'src/b.ts': 'export function b() {}\n' });
+    const oldSource = { ...f.methodNodes[0], id: 'func:src/b.ts:b', filePath: 'src/b.ts', name: 'b' };
+    const previous = JSON.parse(f.persisted()[0]);
+    previous.nodes.push(oldSource);
+    writeFileSync(join(f.dataDir, 'knowledge-graph.json'), JSON.stringify(previous));
+    writeProjectFile(f.root, 'src/a.ts', f.source([...f.names, 'added']));
+    writeProjectFile(f.root, 'src/b.ts', 'export function b(value: number) { return value; }\n');
+    commit(f.root, 'add method');
+    prepare(f.root, f.baseCommit);
+    const replacements = f.methodNodes.map(node => ({ ...node, id: node.id.replace('Service.', 'Service::') }));
+    const newSource = { ...oldSource, id: 'function:src/b.ts:b' };
+    const source = newSource.id;
+    f.write('batch-1.json', {
+      nodes: [f.fileNode, f.classNode, ...replacements, previous.nodes.find(node => node.id === 'file:src/b.ts'), newSource],
+      edges: [{ source: oldSource.id, target: f.methodNodes[1].id, type: 'calls', direction: 'forward', weight: 0.7 }],
+    });
+    run(python, [mergeScript, f.root], f.root);
+    const report = f.read('incremental-symbol-report.json');
+    expect(report.ok).toBe(true);
+    expect(report.unresolvedFiles).toEqual([]);
+    expect(report.idReplacements).toContainEqual({ oldId: f.methodNodes[1].id, newId: replacements[1].id });
+    expect(report.idReplacements).toContainEqual({ oldId: oldSource.id, newId: newSource.id });
+    expect(() => f.read('incremental-symbol-retry.json')).toThrow();
+    const assembled = f.read('assembled-graph.json');
+    expect(assembled.edges.some(edge => edge.source === source && edge.target === replacements[1].id)).toBe(true);
+    // The final save gate independently reconciles the same current evidence.
+    assembled.edges = assembled.edges.filter(edge => edge.type !== 'calls');
+    f.write('assembled-graph.json', assembled);
+    run(process.execPath, [finalizeScript, f.root], f.root);
+    expect(JSON.parse(f.persisted()[0]).edges.some(edge => edge.source === source
+      && edge.target === replacements[1].id && edge.weight === 0.7)).toBe(true);
+  });
+
   it('rejects changed analyzer inputs even when all old symbol IDs survive', () => {
     const f = symbolFixture(2);
     writeProjectFile(f.root, 'src/a.ts', f.source([...f.names, 'added']));
@@ -326,7 +361,7 @@ describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
       expect(graph.edges.find(edge => edge.source === otherFunction.id && edge.target === repairedMethods[0].id)?.weight).toBe(0.8);
       expect(graph.edges.find(edge => edge.source === otherFunction.id && edge.target === repairedMethods[1].id)?.weight).toBe(0.9);
       if (outcome === 'renamed-ids') {
-        expect(f.read('incremental-symbol-report.json').retryIdReplacements).toContainEqual({
+        expect(f.read('incremental-symbol-report.json').idReplacements).toContainEqual({
           oldId: initialMethod.id, newId: repairedMethods[0].id,
         });
         // Finalize must reconcile independently if its candidate loses the
