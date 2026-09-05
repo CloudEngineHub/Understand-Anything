@@ -19,7 +19,7 @@ const compare = (oldNodes, newNodes, oldSource, newSource) => compareFileSymbols
 
 describe('incremental symbol matching', () => {
   it.each(['attr :name', 'attr "name"', 'attr :"name"', 'attr :name, true', 'attr_reader :name',
-    'attr_writer :name', 'attr_accessor :name', 'obj.attr'])('allows unrelated Ruby deletion beside %s', accessor => {
+    'attr_writer :name', 'attr_accessor :name', 'obj.attr', 'attr_writer "run"', 'attr_writer :"run"'])('allows unrelated Ruby deletion beside %s', accessor => {
     const before = parser.analyzeFileStrict('a.rb', 'class A\n def run; end\nend');
     const after = parser.analyzeFileStrict('a.rb', `class A\n def keep; end\n ${accessor}\nend`);
     expect(after.hasUnresolvedNames).toBe(false);
@@ -28,6 +28,7 @@ describe('incremental symbol matching', () => {
 
   it.each([
     ['run', 'attr :run'], ['run=', 'attr :run, true'], ['run=', 'attr_writer :run'],
+    ['run=', 'attr_writer "run"'], ['run=', 'attr_writer :"run"'],
     ['run', 'attr_accessor :run'], ['run=', 'attr_accessor :run'], ['run', 'attr_reader :run'],
   ])('does not confirm deletion of Ruby %s still installed by %s', (name, accessor) => {
     const before = parser.analyzeFileStrict('a.rb', `class A\n def ${name}${name.endsWith('=') ? '(value)' : ''}; end\nend`);

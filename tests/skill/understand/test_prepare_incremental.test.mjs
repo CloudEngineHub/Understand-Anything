@@ -232,14 +232,14 @@ afterEach(async () => {
 });
 
 describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
-  it('publishes genuine Ruby method deletion beside a static attr and an ordinary attr call', () => {
+  it.each(['attr :name', 'attr_writer "run"', 'attr_writer :"run"'])('publishes genuine Ruby reader deletion beside %s and an ordinary attr call', accessor => {
     const path = 'src/accessor.rb';
-    const f = symbolFixture(2, { [path]: 'class A\n def run; end\n attr :name\nend\nobj.attr\n' });
+    const f = symbolFixture(2, { [path]: `class A\n def run; end\n ${accessor}\nend\nobj.attr\n` });
     const previous = JSON.parse(f.persisted()[0]);
     const method = { ...f.methodNodes[0], id: `function:${path}:A.run`, name: 'A.run', filePath: path };
     previous.nodes.push(method);
     writeFileSync(join(f.dataDir, 'knowledge-graph.json'), JSON.stringify(previous));
-    writeProjectFile(f.root, path, 'class A\n def keep; end\n attr :name\nend\nobj.attr\n');
+    writeProjectFile(f.root, path, `class A\n def keep; end\n ${accessor}\nend\nobj.attr\n`);
     const head = commit(f.root, 'delete method beside static accessor');
     prepare(f.root, f.baseCommit);
     f.write('batch-1.json', { nodes: [previous.nodes.find(node => node.id === `file:${path}`)], edges: [] });

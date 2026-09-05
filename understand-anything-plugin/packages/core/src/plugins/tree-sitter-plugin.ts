@@ -358,12 +358,14 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
       const pending = [tree.rootNode];
       while (pending.length > 0) {
         const node = pending.pop()!;
+        let staticAccessorArguments: TreeSitterNode | null = null;
         if (isRubyExtractor) {
           const accessor = rubyAccessorEvidence(node);
           if (accessor?.unresolved) hasUnresolvedNames = true;
           // Static readers/writers only prevent deleting those exact names;
           // an unrelated attr token or accessor cannot taint the entire file.
           for (const name of accessor?.names ?? []) leafTexts.add(name);
+          if (accessor && !accessor.unresolved) staticAccessorArguments = node.childForFieldName("arguments");
         }
         // Name references also cover local aliases and dynamic dispatch. These
         // languages can install methods without any structural declaration.
@@ -414,7 +416,9 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
           }
         }
         if (node.childCount === 0) leafTexts.add(node.text);
-        else pending.push(...node.children);
+        // Exact accessor names replace their literal argument leaves: the
+        // quoted key in attr_writer "run" is evidence of run=, not run.
+        else pending.push(...node.children.filter(child => child.id !== staticAccessorArguments?.id));
       }
       return {
         status: "succeeded",
