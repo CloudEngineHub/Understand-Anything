@@ -418,9 +418,11 @@ When the report has `unresolvedFiles`, prepare exactly one repair:
 node "<SKILL_DIR>/prepare-symbol-retry.mjs" "$PROJECT_ROOT"
 ```
 
-This helper revalidates the candidate, records attempt 1/1 for the base/head commits, removes the affected files' new contributions and their incident edges, clears old numeric batch shards, and preserves other merged results in `batch-0.json`. Dispatch only `batches[]` from `incremental-symbol-retry.json`, using each batch's `files`, `batchIndex`, `batchImportData`, `neighborMap`, `previousSymbols`, and `missingSymbols`. Use the normal file-analyzer prompt and output names. The repair must reanalyze each affected file completely, not just append missing nodes. Then rerun merge. Do not rerun prepare to obtain another retry; the attempt remains used for those commits.
+This helper revalidates the candidate, records attempt 1/1 for the base/head commits, removes the affected files' new nodes and outgoing edges, clears old numeric batch shards, and preserves other merged results in `batch-0.json`. Current inbound edges from other files remain candidates until merge reconciles their targets against the replacement nodes; candidates with missing targets are dropped. Dispatch only `batches[]` from `incremental-symbol-retry.json`, using each batch's `files`, `batchIndex`, `batchImportData`, `neighborMap`, `previousSymbols`, and `missingSymbols`. Use the normal file-analyzer prompt and output names. The repair must reanalyze each affected file completely, not just append missing nodes. Then rerun merge. Do not rerun prepare to obtain another retry; the attempt remains used for those commits.
 
 If repair preparation, the repair dispatch, or the second merge fails, **STOP** and retain diagnostics. Do not publish or advance `knowledge-graph.json`, `fingerprints.json`, or `meta.json`. Never concatenate old nodes or old semantic edges into the candidate to satisfy the gate. Other merge failures without eligible unresolved files stop immediately. On success, continue to the applicable architecture/tour phases.
+
+Parser limitation: languages without a deterministic structural parser (including `.sh`, `.ps1`, and `.bat`) cannot have missing symbols automatically confirmed as deleted. Such omissions remain `unknown`, even for genuine deletions, and stop publication pending manual investigation or parser support. Supplemental LLM source inspection and regex guesses are not deletion evidence. Preserved symbols with unchanged IDs/names do not require a parser.
 
 ---
 
