@@ -22,8 +22,11 @@ describe('incremental symbol matching', () => {
     const filePath = `src/a.${extension}`;
     const before = parser.analyzeFileStrict(filePath, 'class A { run() {} }');
     const after = parser.analyzeFileStrict(filePath, 'class A { keep() {} }; A.prototype["r" + "un"] = function() {};');
-    expect(before.status).toBe('succeeded');
-    expect(after.status).toBe('succeeded');
+    // The built-in language registry does not yet enable .mts/.cts parsing;
+    // those extensions must still block instead of implying source deletion.
+    const expectedStatus = ['mts', 'cts'].includes(extension) ? 'unsupported' : 'succeeded';
+    expect(before.status).toBe(expectedStatus);
+    expect(after.status).toBe(expectedStatus);
     const previous = graph([node('A.run', { filePath, id: `function:${filePath}:A.run` })]);
     expect(compareFileSymbols(previous, graph([]), before, after).missing[0].status).toBe('unknown');
   });
