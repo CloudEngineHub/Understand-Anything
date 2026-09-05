@@ -232,6 +232,68 @@ afterEach(async () => {
 });
 
 describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
+  it.each([false, true])('preserves current endpoint meanings when baseline IDs are reused (rename again=%s)', renameAgain => {
+    const service = names => `export class Service { ${names.map(name => `${name}() { return 1; }`).join(' ')} }\n`;
+    const other = 'export class Other { method0() { return 2; } }\n';
+    const third = 'export class Third { method0() { return 3; } }\n';
+    const a = 'src/a.ts';
+    const b = 'src/b.ts';
+    const f = symbolFixture(2, { [a]: service(['method0', 'method1']) + other + third, [b]: service(['method0']) + other });
+    const cls = (filePath, name) => ({ ...f.classNode, id: `class:${filePath}:${name}`, filePath, name });
+    const method = (filePath, owner, generic = false) => ({
+      ...f.methodNodes[0], filePath,
+      id: `function:${filePath}:${generic ? 'method0' : `${owner}.method0`}`,
+      name: generic ? 'method0' : `${owner}.method0`,
+    });
+    const contains = (parent, child) => ({ source: parent.id, target: child.id, type: 'contains', direction: 'forward', weight: 1 });
+    const oldA = method(a, 'Service', true);
+    const oldB = method(b, 'Service', true);
+    const aOther = cls(a, 'Other');
+    const aThird = cls(a, 'Third');
+    const bService = cls(b, 'Service');
+    const bOther = cls(b, 'Other');
+    const previous = JSON.parse(f.persisted()[0]);
+    previous.nodes = previous.nodes.map(node => node.id === f.methodNodes[0].id ? oldA : node);
+    previous.nodes.push(aOther, aThird, bService, bOther, oldB);
+    previous.edges = previous.edges.map(edge => edge.target === f.methodNodes[0].id ? { ...edge, target: oldA.id } : edge);
+    previous.edges.push(contains(bService, oldB));
+    writeFileSync(join(f.dataDir, 'knowledge-graph.json'), JSON.stringify(previous));
+    writeProjectFile(f.root, a, service([...f.names, 'added']) + other + third);
+    writeProjectFile(f.root, b, service(['method0', 'added']) + other);
+    commit(f.root, 'change both services');
+    prepare(f.root, f.baseCommit);
+    const aServiceRun = method(a, 'Service');
+    const bServiceRun = method(b, 'Service');
+    const aOtherRun = method(a, 'Other', true);
+    const bOtherRun = method(b, 'Other', true);
+    f.write('batch-1.json', {
+      nodes: [f.fileNode, f.classNode, aOther, aThird, aServiceRun, aOtherRun,
+        previous.nodes.find(node => node.id === `file:${b}`), bService, bOther, bServiceRun, bOtherRun],
+      edges: [contains(f.classNode, aServiceRun), contains(aOther, aOtherRun),
+        contains(bService, bServiceRun), contains(bOther, bOtherRun),
+        { source: bOtherRun.id, target: aOtherRun.id, type: 'calls', direction: 'forward', weight: 0.8 }],
+    });
+    expect(spawnSync(python, [mergeScript, f.root]).status).toBe(1);
+    run(process.execPath, [retryScript, f.root], f.root);
+    const retry = f.read('incremental-symbol-retry.json');
+    expect(retry.filesToReanalyze).toEqual([a]);
+    expect(retry.inboundEdgeCandidates).toContainEqual(expect.objectContaining({ source: bOtherRun.id, target: aOtherRun.id }));
+    const restoredOther = renameAgain ? method(a, 'Other') : aOtherRun;
+    const thirdRun = method(a, 'Third', true);
+    const repairedNodes = [f.fileNode, f.classNode, aOther, aThird, aServiceRun, f.methodNodes[1], restoredOther];
+    const repairedEdges = [contains(f.classNode, aServiceRun), contains(f.classNode, f.methodNodes[1]), contains(aOther, restoredOther)];
+    if (renameAgain) {
+      repairedNodes.push(thirdRun);
+      repairedEdges.push(contains(aThird, thirdRun));
+    }
+    for (const batch of retry.batches) f.write(`batch-${batch.batchIndex}.json`, { nodes: repairedNodes, edges: repairedEdges });
+    run(python, [mergeScript, f.root], f.root);
+    run(process.execPath, [finalizeScript, f.root], f.root);
+    expect(JSON.parse(f.persisted()[0]).edges.filter(edge => edge.type === 'calls')).toEqual([
+      { source: bOtherRun.id, target: restoredOther.id, type: 'calls', direction: 'forward', weight: 0.8 },
+    ]);
+  });
+
   it('blocks owner substitution behind an unchanged generic method ID in merge and finalize', () => {
     const otherSource = 'export class Other { method0() { return 2; } }\n';
     const f = symbolFixture(2, {
@@ -369,8 +431,9 @@ describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
     const retained = f.read('batch-0.json');
     expect(retained.nodes.find(node => node.id === otherFunction.id)?.summary).toBe(otherFunction.summary);
     expect(retained.nodes.some(node => node.filePath === 'src/a.ts')).toBe(false);
-    expect(retained.edges.some(edge => edge.target === obsolete.id)).toBe(true);
-    expect(retained.edges.some(edge => edge.source === otherFunction.id && edge.target === initialMethod.id)).toBe(true);
+    expect(retained.edges.some(edge => edge.target === obsolete.id)).toBe(false);
+    expect(retained.edges.some(edge => edge.source === otherFunction.id && edge.target === initialMethod.id)).toBe(false);
+    expect(retry.inboundEdgeCandidates.some(edge => edge.source === otherFunction.id && edge.target === initialMethod.id)).toBe(true);
     expect(retained.edges.some(edge => edge.source === initialMethod.id)).toBe(false);
     expect(retained.edges.some(edge => edge.target === otherFunction.id)).toBe(true);
     for (const batch of retry.batches) f.write(`batch-${batch.batchIndex}.json`, {
@@ -389,7 +452,7 @@ describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
       expect(graph.edges.find(edge => edge.source === otherFunction.id && edge.target === repairedMethods[0].id)?.weight).toBe(0.8);
       expect(graph.edges.find(edge => edge.source === otherFunction.id && edge.target === repairedMethods[1].id)?.weight).toBe(0.9);
       if (outcome === 'renamed-ids') {
-        expect(f.read('incremental-symbol-report.json').idReplacements).toContainEqual({
+        expect(f.read('incremental-symbol-report.json').currentIdBindings).toContainEqual({
           oldId: initialMethod.id, newId: repairedMethods[0].id,
         });
         // Finalize must reconcile independently if its candidate loses the
@@ -411,6 +474,7 @@ describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
       prepare(f.root, f.baseCommit);
       expect(f.read('incremental-symbol-retry.json').attempt).toBe(1);
       expect(f.read('incremental-symbol-retry.json')).not.toHaveProperty('inboundEdgeCandidates');
+      expect(f.read('incremental-symbol-retry.json')).not.toHaveProperty('currentFiles');
       expect(() => f.read('incremental-edge-candidates.json')).toThrow();
       expect(spawnSync(process.execPath, [retryScript, f.root]).status).toBe(1);
       expect(f.persisted()).toEqual(before);

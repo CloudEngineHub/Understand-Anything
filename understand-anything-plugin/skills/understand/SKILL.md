@@ -414,6 +414,8 @@ The merge combines `batch-existing.json` with any fresh batch output. Its import
 
 Before dropping dangling endpoints, merge records normalized edge candidates from fresh batches in `incremental-edge-candidates.json`, bound to the base/head commits. Every successful validation reconciles their source and target IDs against accepted symbol replacements, including first-pass updates that need no retry. Retry also preserves these alongside surviving current edges, so an edge to the initially omitted symbol can be restored after repair. Edges from `batch-existing.json` are not collected as fresh evidence.
 
+Candidate endpoints use the current analysis's node and ownership descriptors before any baseline alias is applied: an ID reused by a different current symbol must keep its current meaning. During repair, incoming edges are deferred outside the ordinary retained batch until those original HEAD descriptors can be matched against replacement nodes, so temporary ID reuse cannot create a false edge during merge.
+
 When the report has `unresolvedFiles`, prepare exactly one repair:
 
 ```bash

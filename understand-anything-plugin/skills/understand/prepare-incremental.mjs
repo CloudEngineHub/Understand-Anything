@@ -694,6 +694,7 @@ async function main() {
     // from a discarded batch generation into a fresh prepare run.
     delete retry.inboundEdgeCandidates;
     delete retry.replacedFiles;
+    delete retry.currentFiles;
     atomicWriteJson(retryPath, retry);
   }
 

@@ -75,6 +75,7 @@ async function main() {
   const removedIds = new Set(assembled.nodes.filter(node => paths.has(normalizePath(node.filePath)))
     .map(node => node.id));
   const retainedIds = new Set(assembled.nodes.filter(node => !removedIds.has(node.id)).map(node => node.id));
+  const currentNodes = new Map(assembled.nodes.map(node => [node.id, node]));
   const previousIds = new Set(baseline.files.filter(file => paths.has(file.filePath))
     .flatMap(file => file.nodes.map(node => node.id)));
   const targetsAffectedFile = id => removedIds.has(id) || previousIds.has(id)
@@ -82,15 +83,19 @@ async function main() {
   const sourceRemap = new Map(report.files.flatMap(file => file.replacements)
     .map(({ oldId, newId }) => [oldId, newId]));
   const inboundEdgeCandidates = [...assembled.edges, ...candidates.edges]
-    .map(edge => ({ ...edge, source: sourceRemap.get(edge.source) ?? edge.source })).filter(edge =>
+    .map(edge => ({ ...edge, source: currentNodes.has(edge.source) ? edge.source : sourceRemap.get(edge.source) ?? edge.source })).filter(edge =>
     retainedIds.has(edge.source) && targetsAffectedFile(edge.target));
+  const contextPaths = new Set(paths);
+  for (const edge of inboundEdgeCandidates) {
+    for (const id of [edge.source, edge.target]) {
+      if (currentNodes.has(id)) contextPaths.add(normalizePath(currentNodes.get(id).filePath));
+    }
+  }
   const retained = {
     nodes: assembled.nodes.filter(node => !removedIds.has(node.id)),
-    // Other files are not reanalyzed. Preserve their current inbound edge
-    // candidates until replacement nodes exist; merge resolves their endpoints
-    // and drops candidates whose targets were actually removed. Only outgoing
-    // edges from the affected files need regeneration by the retry analyzer.
-    edges: assembled.edges.filter(edge => !removedIds.has(edge.source)),
+    // Defer inbound edges to the descriptor-bound manifest below. Re-merging
+    // their bare IDs here could attach them to different symbols reusing IDs.
+    edges: assembled.edges.filter(edge => retainedIds.has(edge.source) && retainedIds.has(edge.target)),
   };
 
   // Persist the attempt BEFORE mutating batches: a crash must not buy another
@@ -100,7 +105,7 @@ async function main() {
     version: 1, baseCommit: plan.baseCommit, headCommit: plan.headCommit, attempt: 1,
     filesToReanalyze: [...paths], batches,
     inboundEdgeCandidates,
-    replacedFiles: [...paths].map(filePath => {
+    currentFiles: [...contextPaths].map(filePath => {
       const nodes = assembled.nodes.filter(node => normalizePath(node.filePath) === filePath);
       const ids = new Set(nodes.map(node => node.id));
       return {

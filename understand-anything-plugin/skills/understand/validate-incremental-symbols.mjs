@@ -231,20 +231,25 @@ export async function validateIncrementalSymbols(projectRoot, { graph, intermedi
     report.graphHash = createHash('sha256').update(JSON.stringify(graph)).digest('hex');
     let parser;
     const evidenceByPath = new Map();
-    const parseRevisions = async path => {
-      if (evidenceByPath.has(path)) return evidenceByPath.get(path);
+    const parseHead = async path => {
+      if (evidenceByPath.get(path)?.head) return evidenceByPath.get(path).head;
       if (!parser) {
         parser = new core.TreeSitterPlugin(core.builtinLanguageConfigs.filter(config => config.treeSitter));
         await parser.init();
       }
       // :./ keeps git-show relative to projectRoot, including monorepo subdirectories.
-      const oldContent = git(projectRoot, ['show', `${plan.baseCommit}:./${path}`]);
       const headContent = git(projectRoot, ['show', `${plan.headCommit}:./${path}`]);
-      const evidence = {
-        base: parser.analyzeFileStrict(path, oldContent),
-        head: parser.analyzeFileStrict(path, headContent),
-      };
+      const evidence = { head: parser.analyzeFileStrict(path, headContent) };
       evidenceByPath.set(path, evidence);
+      return evidence.head;
+    };
+    const parseRevisions = async path => {
+      await parseHead(path);
+      const evidence = evidenceByPath.get(path);
+      if (!evidence.base) {
+        const oldContent = git(projectRoot, ['show', `${plan.baseCommit}:./${path}`]);
+        evidence.base = parser.analyzeFileStrict(path, oldContent);
+      }
       return evidence;
     };
     const fileGraph = filePath => {
@@ -282,32 +287,56 @@ export async function validateIncrementalSymbols(projectRoot, { graph, intermedi
         throw new Error('Current edge candidates do not match the incremental plan');
       }
       const hasRetry = retry?.baseCommit === plan.baseCommit && retry.headCommit === plan.headCommit
-        && Array.isArray(retry.inboundEdgeCandidates) && Array.isArray(retry.replacedFiles);
-      const candidates = [...(currentCandidates?.edges ?? []), ...(hasRetry ? retry.inboundEdgeCandidates : [])];
+        && Array.isArray(retry.inboundEdgeCandidates);
+      if (hasRetry && !Array.isArray(retry.currentFiles)) throw new Error('Retry endpoint descriptors are missing');
+      const candidates = [
+        ...(currentCandidates?.edges ?? []).map(edge => ({ edge, saved: false })),
+        ...(hasRetry ? retry.inboundEdgeCandidates : []).map(edge => ({ edge, saved: true })),
+      ];
       if (candidates.length || hasRetry) {
         const ids = new Set(graph.nodes.map(node => node.id));
-        // An endpoint omitted in the initial merge has no current descriptor;
-        // use its independently verified baseline-to-current identity mapping.
-        const remap = new Map(report.files.flatMap(file => file.replacements)
+        const replacements = new Map(report.files.flatMap(file => file.replacements)
           .map(({ oldId, newId }) => [oldId, newId]));
+        const deleted = new Set(report.files.flatMap(file => file.missing.map(node => node.id)));
+        const baselineBindings = new Map(baseline.files.flatMap(file => file.nodes.filter(symbolKind))
+          .map(node => [node.id, deleted.has(node.id) ? null : replacements.get(node.id) ?? node.id]));
+        const currentBindings = new Map();
         // These descriptors belong to the initial CURRENT analysis, not the
         // old published graph. Both sides therefore map against HEAD source.
-        for (const previous of hasRetry ? retry.replacedFiles : []) {
-          if (!previous.nodes.some(node => !ids.has(node.id) && symbolKind(node))) continue;
-          const evidence = (await parseRevisions(previous.filePath)).head;
-          const result = compareFileSymbols(previous, fileGraph(previous.filePath), evidence, evidence);
-          for (const replacement of result.replacements) remap.set(replacement.oldId, replacement.newId);
+        for (const previous of hasRetry ? retry.currentFiles : []) {
+          const current = fileGraph(previous.filePath);
+          const needsEvidence = previous.nodes.some(node => symbolKind(node) && !hasPreservedIdentity(node, previous, current));
+          const evidence = needsEvidence && previous.filePath ? await parseHead(previous.filePath) : undefined;
+          const result = compareFileSymbols(previous, current, evidence, evidence);
+          const missing = new Set(result.missing.map(node => node.id));
+          const aliases = new Map(result.replacements.map(({ oldId, newId }) => [oldId, newId]));
+          for (const node of previous.nodes) {
+            const match = symbolKind(node)
+              ? missing.has(node.id) ? null : aliases.get(node.id) ?? node.id
+              : current.nodes.some(candidate => candidate.id === node.id && candidate.type === node.type && candidate.name === node.name)
+                ? node.id : null;
+            // Even a failed match overrides the old baseline meaning of this
+            // ID. The current analysis may have reused it for another symbol.
+            currentBindings.set(node.id, match);
+          }
         }
+        const endpoint = (id, saved) => {
+          if (saved && currentBindings.has(id)) return currentBindings.get(id);
+          if (!saved && ids.has(id)) return id;
+          if (baselineBindings.has(id)) return baselineBindings.get(id);
+          return ids.has(id) ? id : null;
+        };
         const edgeKey = edge => JSON.stringify([edge.source, edge.target, edge.type, edge.direction]);
         const existing = new Map(graph.edges.map((edge, index) => [edgeKey(edge), index]));
         report.reconciledCurrentEdges = 0;
         report.droppedCurrentEdges = [];
-        report.idReplacements = [...remap].map(([oldId, newId]) => ({ oldId, newId }));
-        for (const candidate of candidates) {
+        report.idReplacements = [...replacements].map(([oldId, newId]) => ({ oldId, newId }));
+        report.currentIdBindings = [...currentBindings].map(([oldId, newId]) => ({ oldId, newId }));
+        for (const { edge: candidate, saved } of candidates) {
           const edge = {
             ...candidate,
-            source: remap.get(candidate.source) ?? candidate.source,
-            target: remap.get(candidate.target) ?? candidate.target,
+            source: endpoint(candidate.source, saved),
+            target: endpoint(candidate.target, saved),
           };
           if (!ids.has(edge.source) || !ids.has(edge.target)) {
             report.droppedCurrentEdges.push({ source: candidate.source, target: candidate.target, type: candidate.type });
