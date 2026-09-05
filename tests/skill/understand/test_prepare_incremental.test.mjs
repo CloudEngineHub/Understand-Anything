@@ -254,6 +254,8 @@ describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
   it.each([
     ['declaration', 'export class Service { ["method" + "0"]() { return 1; } method1() {} }\n'],
     ['assignment', 'export class Service { method1() {} }; Service.prototype["method" + "0"] = function() {};\n'],
+    ['property definition', 'export class Service { method1() {} }; Object.defineProperty(Service.prototype, "method" + "0", { value() {} });\n'],
+    ['reflection', 'export class Service { method1() {} }; Reflect.defineProperty(Service.prototype, "method" + "0", { value() {} });\n'],
   ])('does not publish a missing method whose computed %s still denotes the old symbol', (_label, source) => {
     const f = symbolFixture(2);
     const result = new Function(source.replace('export ', '') + '\nreturn Service;')();

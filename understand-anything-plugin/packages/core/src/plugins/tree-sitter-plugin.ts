@@ -302,9 +302,30 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
         name.includes("\\") || name.includes("`") || name.startsWith("@")
         || name.startsWith("r#") || name.normalize("NFKC") !== name,
       );
+      const isJavaScriptExtractor = extractor.languageIds.some(id => id === "typescript" || id === "javascript");
+      const propertyDefinitionNames = new Set(["defineProperty", "defineProperties", "__defineGetter__", "__defineSetter__"]);
       const pending = [tree.rootNode];
       while (pending.length > 0) {
         const node = pending.pop()!;
+        if (isJavaScriptExtractor) {
+          // Runtime property installers are not structural declarations. Mark
+          // references as well as calls so local aliases/destructuring cannot
+          // make a computed property name look like a confirmed deletion.
+          if (["identifier", "property_identifier", "shorthand_property_identifier_pattern"].includes(node.type)
+            && (propertyDefinitionNames.has(node.text) || node.text === "Reflect")) {
+            hasUnresolvedNames = true;
+          }
+          if (node.type === "member_expression"
+            && node.childForFieldName("object")?.text === "Object"
+            && node.childForFieldName("property")?.text === "assign") {
+            hasUnresolvedNames = true;
+          }
+          if (node.type === "call_expression") {
+            const callee = node.childForFieldName("function");
+            // A computed callee can itself select a property-definition API.
+            if (callee?.type === "subscript_expression") hasUnresolvedNames = true;
+          }
+        }
         const methodName = ["method_definition", "method_signature", "abstract_method_signature"].includes(node.type)
           ? node.childForFieldName("name") : null;
         // Valid syntax is not necessarily a name the extractor can resolve.
@@ -314,7 +335,7 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
           || (methodName?.type === "string" && methodName.text.includes("\\"))) {
           hasUnresolvedNames = true;
         }
-        if (!hasUnresolvedNames && extractor.languageIds.some(id => id === "typescript" || id === "javascript")
+        if (!hasUnresolvedNames && isJavaScriptExtractor
           && ["assignment_expression", "augmented_assignment_expression"].includes(node.type)) {
           // Methods can also be installed through prototype/object writes.
           // Inspect the entire target for destructuring and wrapped accesses;

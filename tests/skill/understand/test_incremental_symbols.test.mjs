@@ -156,6 +156,8 @@ describe('incremental symbol matching', () => {
     ['computed method', 'class A { ["run"]() {} }'],
     ['computed name fragments', 'class A { ["r" + "un"]() {} keep() {} }'],
     ['computed method assignment', 'class A { keep() {} }; A.prototype["r" + "un"] = function() {};'],
+    ['computed property-definition call', 'class A { keep() {} }; Object.defineProperty(A.prototype, "r" + "un", { value() {} });'],
+    ['computed reflection call', 'class A { keep() {} }; Reflect.defineProperty(A.prototype, "r" + "un", { value() {} });'],
     ['escaped method assignment', String.raw`class A { keep() {} }; A.prototype.r\u0075n = function() {};`],
     ['escaped identifier', String.raw`class A { r\u0075n() {} keep() {} }`],
     ['escaped string method name', String.raw`class A { "r\u0075n"() {} keep() {} }`],

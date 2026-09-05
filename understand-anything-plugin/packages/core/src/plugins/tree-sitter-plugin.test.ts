@@ -388,6 +388,13 @@ export class Greeter {
         'class A { keep() {} }; A.prototype[key] ||= function() {};',
         'class A { keep() {} }; ({method: A.prototype[key]} = obj);',
         String.raw`class A { keep() {} }; A.prototype.r\u0075n = function() {};`,
+        'class A { keep() {} }; Object.defineProperty(A.prototype, "r" + "un", { value() {} });',
+        'class A { keep() {} }; Reflect.defineProperty(A.prototype, "r" + "un", { value() {} });',
+        'const define = Object.defineProperty; define(A.prototype, key, { value() {} });',
+        'const { defineProperty: define } = Object; define(A.prototype, key, { value() {} });',
+        'Object["define" + "Property"](A.prototype, key, { value() {} });',
+        'Reflect.set(A.prototype, "r" + "un", function() {});',
+        'Object.assign(A.prototype, descriptors);',
       ]) {
         const result = plugin.analyzeFileStrict(filePath, code);
         expect(result.status).toBe("succeeded");
