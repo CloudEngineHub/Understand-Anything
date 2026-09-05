@@ -160,6 +160,16 @@ export function compareFingerprints(
     };
   }
 
+  // A null receiver is incomplete evidence, not a stable identity. Any content
+  // change must reach the source validator even if other signatures match.
+  if ([...oldFp.functions, ...newFp.functions].some(fn => fn.owner === null)) {
+    return {
+      filePath: newFp.filePath,
+      changeLevel: "STRUCTURAL",
+      details: ["unresolved function ownership — conservative classification"],
+    };
+  }
+
   // Compare function signatures
   // Receiver changes matter even when the type is declared in another file.
   // Also conservatively reanalyze changed files with older ownerless evidence.

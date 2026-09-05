@@ -232,6 +232,25 @@ afterEach(async () => {
 });
 
 describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
+  it('reanalyzes changed Rust trait identities and blocks publication with unresolved receivers', () => {
+    const path = 'src/method.rs';
+    const f = symbolFixture(2, { [path]: 'impl TraitA for A { fn run(&self) {} }\n' });
+    const previous = JSON.parse(f.persisted()[0]);
+    const method = { ...f.methodNodes[0], id: `function:${path}:run`, name: 'run', filePath: path, lineRange: [1, 1] };
+    previous.nodes.push(method);
+    writeFileSync(join(f.dataDir, 'knowledge-graph.json'), JSON.stringify(previous));
+    writeProjectFile(f.root, path, 'impl TraitB for B { fn run(&self) {} }\n');
+    commit(f.root, 'change trait and receiver');
+    const before = f.persisted();
+    const { plan } = prepare(f.root, f.baseCommit);
+    expect(plan.filesToReanalyze).toContain(path);
+    f.write('batch-1.json', { nodes: [previous.nodes.find(node => node.id === `file:${path}`), method], edges: [] });
+    expect(spawnSync(python, [mergeScript, f.root]).status).toBe(1);
+    expect(f.read('incremental-symbol-report.json').files.find(file => file.filePath === path).missing[0].status).toBe('unknown');
+    expect(spawnSync(process.execPath, [finalizeScript, f.root]).status).toBe(1);
+    expect(f.persisted()).toEqual(before);
+  });
+
   it('does not publish a missing method whose computed source name still denotes the old symbol', () => {
     const f = symbolFixture(2);
     const source = 'export class Service { ["method" + "0"]() { return 1; } method1() {} }\n';
