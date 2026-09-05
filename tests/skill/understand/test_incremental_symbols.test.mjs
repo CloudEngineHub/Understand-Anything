@@ -30,6 +30,7 @@ describe('incremental symbol matching', () => {
       [node('run', { id: 'func:src/a.ts:A::run', lineRange: [6, 6] })],
       'class A {\n run() {}\n}', '\n\n\n\nclass A {\n run() {}\n}');
     expect(result.missing).toEqual([]);
+    expect(result.replacements).toEqual([{ oldId: 'function:src/a.ts:A.run', newId: 'func:src/a.ts:A::run' }]);
   });
 
   it('does not substitute a different class with the same method name', () => {

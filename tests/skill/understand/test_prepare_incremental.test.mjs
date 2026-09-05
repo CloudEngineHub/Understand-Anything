@@ -231,7 +231,38 @@ afterEach(async () => {
 });
 
 describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
-  it.each(['success', 'failure'])('retries only affected files once, preserves other results, and handles retry %s', outcome => {
+  it('rejects changed analyzer inputs even when all old symbol IDs survive', () => {
+    const f = symbolFixture(2);
+    writeProjectFile(f.root, 'src/a.ts', f.source([...f.names, 'added']));
+    commit(f.root, 'add method');
+    const before = f.persisted();
+    prepare(f.root, f.baseCommit);
+    writeProjectFile(f.root, 'src/a.ts', f.source([...f.names, 'uncommitted']));
+    f.write('batch-0.json', { nodes: [f.fileNode, f.classNode, ...f.methodNodes], edges: [] });
+    expect(spawnSync(python, [mergeScript, f.root]).status).toBe(1);
+    expect(spawnSync(process.execPath, [finalizeScript, f.root]).status).toBe(1);
+    expect(f.persisted()).toEqual(before);
+  });
+
+  it.each([false, true])('uses Git cleanliness for CRLF source when dirty=%s', dirty => {
+    const f = symbolFixture(2);
+    writeProjectFile(f.root, '.gitattributes', 'src/a.ts text eol=crlf\n');
+    writeProjectFile(f.root, 'src/a.ts', f.source([f.names[0]]).replaceAll('\n', '\r\n'));
+    commit(f.root, 'delete method with CRLF checkout');
+    const before = f.persisted();
+    prepare(f.root, f.baseCommit);
+    if (dirty) writeProjectFile(f.root, 'src/a.ts', f.source([...f.names, 'dirty']).replaceAll('\n', '\r\n'));
+    const attributes = { ...f.fileNode, id: 'file:.gitattributes', filePath: '.gitattributes', name: '.gitattributes' };
+    f.write('batch-0.json', { nodes: [attributes, f.fileNode, f.classNode, f.methodNodes[0]], edges: [] });
+    const merged = spawnSync(python, [mergeScript, f.root], { encoding: 'utf8' });
+    const finalized = spawnSync(process.execPath, [finalizeScript, f.root], { encoding: 'utf8' });
+    expect(merged.status, merged.stderr).toBe(dirty ? 1 : 0);
+    expect(finalized.status, finalized.stderr).toBe(dirty ? 1 : 0);
+    if (dirty) expect(f.persisted()).toEqual(before);
+    else expect(f.read('incremental-symbol-report.json').files.find(file => file.filePath === 'src/a.ts').missing[0].status).toBe('deleted');
+  });
+
+  it.each(['success', 'failure', 'renamed-ids'])('retries only affected files once, preserves other results, and handles retry %s', outcome => {
     const f = symbolFixture(2);
     writeProjectFile(f.root, 'src/a.ts', f.source([...f.names, 'added']));
     writeProjectFile(f.root, 'src/b.ts', 'export function b() { return 2; }\n');
@@ -243,12 +274,18 @@ describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
       ...f.methodNodes[0], id: 'function:src/b.ts:b', filePath: 'src/b.ts', name: 'b', summary: 'Fresh analysis to retain',
     };
     const obsolete = { ...f.methodNodes[0], id: 'function:src/a.ts:obsolete', name: 'obsolete' };
-    f.write('batch-7-part-1.json', { nodes: [f.fileNode, f.classNode, f.methodNodes[0], otherFile], edges: [] });
+    const initialMethod = outcome === 'renamed-ids'
+      ? { ...f.methodNodes[0], id: f.methodNodes[0].id.replace('Service.', 'Service#') }
+      : f.methodNodes[0];
+    const repairedMethods = outcome === 'renamed-ids'
+      ? f.methodNodes.map(node => ({ ...node, id: node.id.replace('Service.', 'Service::') }))
+      : outcome === 'success' ? f.methodNodes : [f.methodNodes[0]];
+    f.write('batch-7-part-1.json', { nodes: [f.fileNode, f.classNode, initialMethod, otherFile], edges: [] });
     f.write('batch-7-part-2.json', { nodes: [otherFunction, obsolete], edges: [
       { source: otherFile.id, target: otherFunction.id, type: 'contains', direction: 'forward', weight: 1 },
       { source: otherFunction.id, target: obsolete.id, type: 'calls', direction: 'forward', weight: 1 },
-      { source: otherFunction.id, target: f.methodNodes[0].id, type: 'calls', direction: 'forward', weight: 0.8 },
-      { source: f.methodNodes[0].id, target: otherFunction.id, type: 'calls', direction: 'forward', weight: 0.5 },
+      { source: otherFunction.id, target: initialMethod.id, type: 'calls', direction: 'forward', weight: 0.8 },
+      { source: initialMethod.id, target: otherFunction.id, type: 'calls', direction: 'forward', weight: 0.5 },
     ] });
     expect(spawnSync(python, [mergeScript, f.root]).status).toBe(1);
     run(process.execPath, [retryScript, f.root], f.root);
@@ -264,15 +301,15 @@ describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
     expect(retained.nodes.find(node => node.id === otherFunction.id)?.summary).toBe(otherFunction.summary);
     expect(retained.nodes.some(node => node.filePath === 'src/a.ts')).toBe(false);
     expect(retained.edges.some(edge => edge.target === obsolete.id)).toBe(true);
-    expect(retained.edges.some(edge => edge.source === otherFunction.id && edge.target === f.methodNodes[0].id)).toBe(true);
-    expect(retained.edges.some(edge => edge.source === f.methodNodes[0].id)).toBe(false);
+    expect(retained.edges.some(edge => edge.source === otherFunction.id && edge.target === initialMethod.id)).toBe(true);
+    expect(retained.edges.some(edge => edge.source === initialMethod.id)).toBe(false);
     expect(retained.edges.some(edge => edge.target === otherFunction.id)).toBe(true);
     for (const batch of retry.batches) f.write(`batch-${batch.batchIndex}.json`, {
-      nodes: [f.fileNode, f.classNode, ...(outcome === 'success' ? f.methodNodes : [f.methodNodes[0]])], edges: [],
+      nodes: [f.fileNode, f.classNode, ...repairedMethods], edges: [],
     });
     const merged = spawnSync(python, [mergeScript, f.root], { encoding: 'utf8' });
     const finalized = spawnSync(process.execPath, [finalizeScript, f.root], { encoding: 'utf8' });
-    if (outcome === 'success') {
+    if (outcome !== 'failure') {
       expect(merged.status, merged.stderr).toBe(0);
       expect(finalized.status, finalized.stderr).toBe(0);
       const graph = JSON.parse(f.persisted()[0]);
@@ -280,7 +317,20 @@ describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
       expect(graph.nodes.find(node => node.id === otherFunction.id)?.summary).toBe(otherFunction.summary);
       expect(graph.nodes.some(node => node.id === obsolete.id)).toBe(false);
       expect(graph.edges.some(edge => edge.target === obsolete.id)).toBe(false);
-      expect(graph.edges.find(edge => edge.source === otherFunction.id && edge.target === f.methodNodes[0].id)?.weight).toBe(0.8);
+      expect(graph.edges.find(edge => edge.source === otherFunction.id && edge.target === repairedMethods[0].id)?.weight).toBe(0.8);
+      if (outcome === 'renamed-ids') {
+        expect(f.read('incremental-symbol-report.json').retryIdReplacements).toContainEqual({
+          oldId: initialMethod.id, newId: repairedMethods[0].id,
+        });
+        // Finalize must reconcile independently if its candidate loses the
+        // recovered edge after merge; the report is not a save authorization.
+        const candidate = f.read('assembled-graph.json');
+        candidate.edges = candidate.edges.filter(edge => edge.target !== repairedMethods[0].id);
+        f.write('assembled-graph.json', candidate);
+        run(process.execPath, [finalizeScript, f.root], f.root);
+        expect(JSON.parse(f.persisted()[0]).edges.some(edge => edge.source === otherFunction.id
+          && edge.target === repairedMethods[0].id)).toBe(true);
+      }
     } else {
       expect(merged.status).toBe(1);
       expect(finalized.status).toBe(1);
@@ -290,6 +340,7 @@ describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
       expect(secondRetry.stderr).toContain('already used');
       prepare(f.root, f.baseCommit);
       expect(f.read('incremental-symbol-retry.json').attempt).toBe(1);
+      expect(f.read('incremental-symbol-retry.json')).not.toHaveProperty('inboundEdgeCandidates');
       expect(spawnSync(process.execPath, [retryScript, f.root]).status).toBe(1);
       expect(f.persisted()).toEqual(before);
     }

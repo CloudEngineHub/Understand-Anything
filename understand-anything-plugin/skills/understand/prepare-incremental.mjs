@@ -688,6 +688,12 @@ async function main() {
   const retry = readJson(retryPath);
   if (retry && (retry.baseCommit !== baseCommit || retry.headCommit !== headCommit)) {
     unlinkSync(retryPath);
+  } else if (retry) {
+    // Retain the attempt limit, but never import current-analysis candidates
+    // from a discarded batch generation into a fresh prepare run.
+    delete retry.inboundEdgeCandidates;
+    delete retry.replacedFiles;
+    atomicWriteJson(retryPath, retry);
   }
 
   atomicWriteJson(join(intermediateDir, 'fingerprint-patch.json'), {

@@ -116,6 +116,7 @@ export function compareFileSymbols(previous, current, baseEvidence, headEvidence
   const oldMappings = oldSymbols.map(node => resolveSymbol(node, previous, baseSource));
   const newMappings = newSymbols.map(node => resolveSymbol(node, current, headSource));
   const missing = [];
+  const replacements = [];
   for (let index = 0; index < oldSymbols.length; index++) {
     const node = oldSymbols[index];
     if (newSymbols.some(candidate => candidate.id === node.id
@@ -129,7 +130,11 @@ export function compareFileSymbols(previous, current, baseEvidence, headEvidence
     } else {
       const matches = headSource.filter(symbol => symbolKey(symbol) === symbolKey(old));
       const graphMatches = newMappings.filter(symbol => symbol && symbolKey(symbol) === symbolKey(old));
-      if (matches.length === 1 && graphMatches.length === 1) continue;
+      if (matches.length === 1 && graphMatches.length === 1) {
+        const matchedIndex = newMappings.findIndex(symbol => symbol && symbolKey(symbol) === symbolKey(old));
+        replacements.push({ oldId: node.id, newId: newSymbols[matchedIndex].id });
+        continue;
+      }
       if (matches.length === 1) {
         entry.status = 'still-present';
         entry.reason = 'Symbol still exists in current source but is missing or ambiguous in the new graph';
@@ -154,6 +159,7 @@ export function compareFileSymbols(previous, current, baseEvidence, headEvidence
     beforeSymbolCount: oldSymbols.length,
     afterSymbolCount: newSymbols.length,
     missing,
+    replacements,
   };
 }
 
@@ -177,6 +183,11 @@ export function loadSymbolContext(projectRoot, intermediateDir) {
   if (git(projectRoot, ['rev-parse', 'HEAD']).trim() !== plan.headCommit) {
     throw new Error('HEAD changed since prepare; baseline not advanced');
   }
+  // Check every analyzer input, even if all IDs survive and parsing is skipped.
+  // Git compares normalized contents, including repository clean/EOL rules.
+  if (paths.length) git(projectRoot, [
+    'diff', '--quiet', '--no-ext-diff', plan.headCommit, '--', ...paths.map(path => `:(literal)${path}`),
+  ]);
   return { plan, baseline };
 }
 
@@ -185,6 +196,7 @@ export async function validateIncrementalSymbols(projectRoot, { graph, intermedi
   intermediateDir ??= join(core.resolveUaDir(projectRoot), 'intermediate');
   const reportPath = join(intermediateDir, 'incremental-symbol-report.json');
   const report = { version: 1, ok: false, files: [], unresolvedFiles: [], errors: [] };
+  const graphFromDisk = graph === undefined;
   try {
     const { plan, baseline } = loadSymbolContext(projectRoot, intermediateDir);
     report.baseCommit = plan.baseCommit;
@@ -193,28 +205,38 @@ export async function validateIncrementalSymbols(projectRoot, { graph, intermedi
     if (!Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) throw new Error('Invalid assembled graph');
     report.graphHash = createHash('sha256').update(JSON.stringify(graph)).digest('hex');
     let parser;
-    for (const previous of baseline.files) {
-      const nodes = graph.nodes.filter(node => normalizePath(node.filePath) === previous.filePath);
+    const evidenceByPath = new Map();
+    const parseRevisions = async path => {
+      if (evidenceByPath.has(path)) return evidenceByPath.get(path);
+      if (!parser) {
+        parser = new core.TreeSitterPlugin(core.builtinLanguageConfigs.filter(config => config.treeSitter));
+        await parser.init();
+      }
+      // :./ keeps git-show relative to projectRoot, including monorepo subdirectories.
+      const oldContent = git(projectRoot, ['show', `${plan.baseCommit}:./${path}`]);
+      const headContent = git(projectRoot, ['show', `${plan.headCommit}:./${path}`]);
+      const evidence = {
+        base: parser.analyzeFileStrict(path, oldContent),
+        head: parser.analyzeFileStrict(path, headContent),
+      };
+      evidenceByPath.set(path, evidence);
+      return evidence;
+    };
+    const fileGraph = filePath => {
+      const nodes = graph.nodes.filter(node => normalizePath(node.filePath) === filePath);
       const ids = new Set(nodes.map(node => node.id));
-      const current = { nodes, edges: graph.edges.filter(edge => ids.has(edge.source) && ids.has(edge.target)) };
+      return { nodes, edges: graph.edges.filter(edge => ids.has(edge.source) && ids.has(edge.target)) };
+    };
+    for (const previous of baseline.files) {
+      const current = fileGraph(previous.filePath);
       let baseEvidence;
       let headEvidence;
-      if (previous.nodes.some(node => symbolKind(node) && !nodes.some(candidate => candidate.id === node.id
+      if (previous.nodes.some(node => symbolKind(node) && !current.nodes.some(candidate => candidate.id === node.id
         && candidate.name === node.name && symbolKind(candidate) === symbolKind(node)))) {
         try {
-          if (!parser) {
-            parser = new core.TreeSitterPlugin(core.builtinLanguageConfigs.filter(config => config.treeSitter));
-            await parser.init();
-          }
-          const path = previous.filePath;
-          // :./ keeps git-show relative to projectRoot, including monorepo subdirectories.
-          const oldContent = git(projectRoot, ['show', `${plan.baseCommit}:./${path}`]);
-          const headContent = git(projectRoot, ['show', `${plan.headCommit}:./${path}`]);
-          if (readFileSync(join(projectRoot, path), 'utf8') !== headContent) {
-            throw new Error('Working source changed since prepare');
-          }
-          baseEvidence = parser.analyzeFileStrict(path, oldContent);
-          headEvidence = parser.analyzeFileStrict(path, headContent);
+          const evidence = await parseRevisions(previous.filePath);
+          baseEvidence = evidence.base;
+          headEvidence = evidence.head;
         } catch (error) {
           baseEvidence = { status: 'failed' };
           headEvidence = { status: 'failed' };
@@ -226,7 +248,46 @@ export async function validateIncrementalSymbols(projectRoot, { graph, intermedi
       if (result.missing.some(node => node.status !== 'deleted')) report.unresolvedFiles.push(previous.filePath);
     }
     report.ok = report.errors.length === 0 && report.unresolvedFiles.length === 0;
+    if (report.ok) {
+      const retryPath = join(intermediateDir, 'incremental-symbol-retry.json');
+      const retry = existsSync(retryPath) ? readJson(retryPath) : null;
+      if (retry?.baseCommit === plan.baseCommit && retry.headCommit === plan.headCommit
+        && Array.isArray(retry.inboundEdgeCandidates) && Array.isArray(retry.replacedFiles)) {
+        const ids = new Set(graph.nodes.map(node => node.id));
+        const remap = new Map();
+        // These descriptors belong to the initial CURRENT analysis, not the
+        // old published graph. Both sides therefore map against HEAD source.
+        for (const previous of retry.replacedFiles) {
+          if (!previous.nodes.some(node => !ids.has(node.id) && symbolKind(node))) continue;
+          const evidence = (await parseRevisions(previous.filePath)).head;
+          const result = compareFileSymbols(previous, fileGraph(previous.filePath), evidence, evidence);
+          for (const replacement of result.replacements) remap.set(replacement.oldId, replacement.newId);
+        }
+        const edgeKey = edge => JSON.stringify([edge.source, edge.target, edge.type]);
+        const existing = new Set(graph.edges.map(edgeKey));
+        report.reconciledRetryEdges = 0;
+        report.droppedRetryEdges = [];
+        report.retryIdReplacements = [...remap].map(([oldId, newId]) => ({ oldId, newId }));
+        for (const candidate of retry.inboundEdgeCandidates) {
+          const edge = { ...candidate, target: remap.get(candidate.target) ?? candidate.target };
+          if (!ids.has(edge.source) || !ids.has(edge.target)) {
+            report.droppedRetryEdges.push({ source: candidate.source, target: candidate.target, type: candidate.type });
+          } else if (!existing.has(edgeKey(edge))) {
+            graph.edges.push(edge);
+            existing.add(edgeKey(edge));
+            report.reconciledRetryEdges++;
+          }
+        }
+        // Merge's earlier dangling-edge cleanup cannot see semantic ID aliases.
+        // Save the reconciled candidate before architecture/tour consumers run.
+        if (graphFromDisk && report.reconciledRetryEdges > 0) {
+          atomicWriteJson(join(intermediateDir, 'assembled-graph.json'), graph);
+        }
+        report.graphHash = createHash('sha256').update(JSON.stringify(graph)).digest('hex');
+      }
+    }
   } catch (error) {
+    report.ok = false;
     report.errors.push(error.message);
   }
   atomicWriteJson(reportPath, report);
@@ -240,6 +301,10 @@ export function formatSymbolReport(report) {
     for (const node of file.missing) lines.push(`    ${node.status}: ${JSON.stringify(node.id)} (${JSON.stringify(node.name)}) — ${node.reason}`);
   }
   lines.push(...report.errors.map(error => `  Error: ${error}`));
+  if (report.reconciledRetryEdges) lines.push(`  Reconciled ${report.reconciledRetryEdges} current inbound retry edge(s)`);
+  for (const edge of report.droppedRetryEdges ?? []) {
+    lines.push(`  Dropped retry edge with unresolved endpoint: ${JSON.stringify(edge)}`);
+  }
   lines.push(report.ok ? 'Symbol validation passed' : 'Symbol validation blocked publication; baseline not advanced');
   return lines.join('\n');
 }

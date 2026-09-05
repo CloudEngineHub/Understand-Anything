@@ -86,6 +86,15 @@ async function main() {
   atomicWriteJson(retryPath, {
     version: 1, baseCommit: plan.baseCommit, headCommit: plan.headCommit, attempt: 1,
     filesToReanalyze: [...paths], batches,
+    inboundEdgeCandidates: assembled.edges.filter(edge => !removedIds.has(edge.source) && removedIds.has(edge.target)),
+    replacedFiles: [...paths].map(filePath => {
+      const nodes = assembled.nodes.filter(node => normalizePath(node.filePath) === filePath);
+      const ids = new Set(nodes.map(node => node.id));
+      return {
+        filePath, nodes,
+        edges: assembled.edges.filter(edge => edge.type === 'contains' && ids.has(edge.source) && ids.has(edge.target)),
+      };
+    }),
   });
   // Replace all numeric shards with one normalized retained contribution.
   // Merely overwriting the main batch leaves stale -part-* files capable of
