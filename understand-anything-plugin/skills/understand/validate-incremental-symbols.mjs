@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /** Shared merge/finalize gate. Reports evidence; never restores old graph data. */
 import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
