@@ -418,6 +418,8 @@ Candidate endpoints use the current analysis's node and ownership descriptors be
 
 A syntactically valid parse is insufficient to prove deletion when declaration names remain computed or escaped. The strict parser marks this uncertainty, and missing symbols remain `unknown` rather than being treated as deleted merely because their literal spelling is absent.
 
+Go receiver methods, Rust inherent impl methods, and C++ out-of-class definitions retain explicit type ownership and their own source ranges. Their duplicate entries in `classes[].methods` are reconciled without assuming the method body is inside the type declaration. Free functions with the same name stay distinct; unresolved receivers and Rust trait impl identities remain `unknown`. Receiver changes also affect structural fingerprints when the type declaration is in another file.
+
 When the report has `unresolvedFiles`, prepare exactly one repair:
 
 ```bash

@@ -56,22 +56,37 @@ function symbolKey(symbol) {
 }
 
 function sourceSymbols(evidence) {
-  if (evidence?.status !== 'succeeded' || !evidence.structure) return [];
+  if (evidence?.status !== 'succeeded' || !evidence.structure || !evidence.language) return [];
   const { functions, classes } = evidence.structure;
   const symbols = [];
+  for (const fn of functions) {
+    let owner = fn.owner;
+    if (owner === undefined) {
+      const possibleOwners = classes.filter(cls => cls.methods.includes(fn.name));
+      const enclosing = possibleOwners.filter(cls => fn.lineRange[0] >= cls.lineRange[0]
+        && fn.lineRange[1] <= cls.lineRange[1]);
+      // These extractors emit out-of-type method definitions; only their
+      // explicit receiver metadata can distinguish those from free functions.
+      owner = ['go', 'rust', 'cpp', 'c'].includes(evidence.language) ? null
+        : enclosing.length === 1 ? enclosing[0].name : enclosing.length ? null : '';
+    }
+    symbols.push({ kind: 'callable', owner, name: fn.name, lineRange: fn.lineRange });
+  }
   for (const cls of classes) {
     symbols.push({ kind: 'class', owner: '', name: cls.name, lineRange: cls.lineRange });
+    const used = new Map();
     for (const name of cls.methods) {
-      symbols.push({ kind: 'callable', owner: cls.name, name, lineRange: cls.lineRange });
+      const count = used.get(name) ?? 0;
+      used.set(name, count + 1);
+      const detailed = symbols.filter(symbol => symbol.kind === 'callable'
+        && symbol.owner === cls.name && symbol.name === name);
+      // Prefer method-definition ranges (Go receivers, Rust impls, C++ out-of-
+      // class definitions). Retain additional overloads and ambiguous classes.
+      if (classes.filter(other => other.name === cls.name).length === 1 && count < detailed.length) continue;
+      const unknownOwner = symbols.some(symbol => symbol.kind === 'callable'
+        && symbol.name === name && symbol.owner === null);
+      symbols.push({ kind: 'callable', owner: unknownOwner ? null : cls.name, name, lineRange: cls.lineRange });
     }
-  }
-  for (const fn of functions) {
-    // Some extractors emit methods in both functions and classes[].methods.
-    // Keep overloads ambiguous, but avoid counting that dual representation.
-    const owners = classes.filter(cls => cls.methods.includes(fn.name)
-      && fn.lineRange[0] >= cls.lineRange[0] && fn.lineRange[1] <= cls.lineRange[1]);
-    if (owners.length > 0) continue;
-    symbols.push({ kind: 'callable', owner: '', name: fn.name, lineRange: fn.lineRange });
   }
   return symbols;
 }
@@ -130,7 +145,7 @@ function resolveSymbol(node, graph, symbols) {
       && node.lineRange[1] <= symbol.lineRange[1]);
     if (located.length === 1) candidates = located;
   }
-  return candidates.length === 1 ? candidates[0] : null;
+  return candidates.length === 1 && candidates[0].owner !== null ? candidates[0] : null;
 }
 
 export function compareFileSymbols(previous, current, baseEvidence, headEvidence, sameRevision = false) {

@@ -1,10 +1,10 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { TreeSitterPlugin } from '../../../understand-anything-plugin/packages/core/dist/index.js';
+import { TreeSitterPlugin, builtinLanguageConfigs } from '../../../understand-anything-plugin/packages/core/dist/index.js';
 import { compareFileSymbols } from '../../../understand-anything-plugin/skills/understand/validate-incremental-symbols.mjs';
 
 let parser;
 beforeAll(async () => {
-  parser = new TreeSitterPlugin();
+  parser = new TreeSitterPlugin(builtinLanguageConfigs.filter(config => config.treeSitter));
   await parser.init();
 });
 
@@ -18,6 +18,46 @@ const compare = (oldNodes, newNodes, oldSource, newSource) => compareFileSymbols
 );
 
 describe('incremental symbol matching', () => {
+  it.each([
+    ['go', 'Run', 'package p\ntype A struct{}\ntype B struct{}\n', owner => `func (x ${owner}) Run() {}\n`, 'func Run() {}\n'],
+    ['rs', 'run', 'struct A;\nstruct B;\n', owner => `impl ${owner} { fn run(&self) {} }\n`, 'fn run() {}\n'],
+    ['cpp', 'run', 'struct A { void run(); };\nstruct B { void run(); };\n', owner => `void ${owner}::run() {}\n`, 'void run() {}\n'],
+  ])('keeps %s receiver methods distinct from each other and a free function', (extension, name, types, method, free) => {
+    const filePath = `src/a.${extension}`;
+    const evidence = source => parser.analyzeFileStrict(filePath, source);
+    const descriptor = line => node(name, { id: `function:${filePath}:${name}`, filePath, lineRange: [line, line] });
+    const check = (oldSource, headSource, oldLine, newLine) => {
+      const base = evidence(oldSource);
+      const head = evidence(headSource);
+      expect(base.status).toBe('succeeded');
+      expect(head.status).toBe('succeeded');
+      return compareFileSymbols(graph([descriptor(oldLine)]), graph([descriptor(newLine)]), base, head);
+    };
+    const start = types.split('\n').length;
+    const both = types + method('A') + method('B') + free;
+    expect(check(both, both, start, start + 1).missing[0].status).toBe('still-present');
+    expect(check(both, both, start, start).missing).toEqual([]);
+    expect(check(both, both, start + 2, start + 2).missing).toEqual([]);
+    // A receiver-only file has no class range available for deduplication.
+    const prefix = extension === 'go' ? 'package p\n' : '';
+    const first = prefix.split('\n').length;
+    expect(check(prefix + method('A'), prefix + method('B'), first, first).missing[0].status).toBe('unknown');
+  });
+
+  it('does not treat legacy or unresolved receiver metadata as a free function', () => {
+    const code = 'package p\ntype A struct{}\nfunc (x A) Run() {}\n';
+    const evidence = parser.analyzeFileStrict('a.go', code);
+    const nodes = graph([node('Run', { lineRange: [3, 3] })]);
+    for (const owner of [undefined, null]) {
+      const old = structuredClone(evidence);
+      old.structure.functions[0].owner = owner;
+      expect(compareFileSymbols(nodes, nodes, old, evidence).missing[0].status).toBe('unknown');
+    }
+    const trait = parser.analyzeFileStrict('a.rs', 'struct A; impl Trait for A { fn run(&self) {} }');
+    expect(compareFileSymbols(graph([node('A.run')]), graph([node('A.run')]), trait, trait)
+      .missing[0].status).toBe('unknown');
+  });
+
   it('detects an omitted old method even when total node counts stay the same', () => {
     const result = compare([node('A.keep'), node('A.lost')], [node('A.keep'), node('A.added')],
       'class A { keep() {} lost() {} }', 'class A { keep() {} lost() {} added() {} }');

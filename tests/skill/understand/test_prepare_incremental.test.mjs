@@ -358,6 +358,36 @@ describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
     expect(f.persisted()).toEqual(before);
   });
 
+  it.each([
+    ['go', 'Run', 'package p\n', owner => `func (x ${owner}) Run() {}\n`],
+    ['rs', 'run', '', owner => `impl ${owner} { fn run(&self) {} }\n`],
+    ['cpp', 'run', '', owner => `void ${owner}::run() {}\n`],
+  ])('blocks a substituted %s receiver in merge and finalize when the type is in another file', (extension, name, prefix, method) => {
+    const path = `src/method.${extension}`;
+    const source = prefix + method('A') + method('B');
+    const f = symbolFixture(2, { [path]: source });
+    const first = prefix.split('\n').length;
+    const generic = { ...f.methodNodes[0], id: `function:${path}:${name}`, name, filePath: path, lineRange: [first, first] };
+    const previous = JSON.parse(f.persisted()[0]);
+    previous.nodes.push(generic);
+    writeFileSync(join(f.dataDir, 'knowledge-graph.json'), JSON.stringify(previous));
+    writeProjectFile(f.root, path, source + method('C'));
+    commit(f.root, 'add receiver method');
+    const before = f.persisted();
+    prepare(f.root, f.baseCommit);
+    expect(f.read('incremental-plan.json').filesToReanalyze).toContain(path);
+    f.write('batch-1.json', {
+      nodes: [previous.nodes.find(node => node.id === `file:${path}`), { ...generic, lineRange: [first + 1, first + 1] }],
+      edges: [],
+    });
+    const merged = spawnSync(python, [mergeScript, f.root], { encoding: 'utf8' });
+    expect(merged.status, merged.stderr).toBe(1);
+    expect(f.read('incremental-symbol-report.json').files.find(file => file.filePath === path).missing)
+      .toContainEqual(expect.objectContaining({ id: generic.id, status: 'still-present' }));
+    expect(spawnSync(process.execPath, [finalizeScript, f.root]).status).toBe(1);
+    expect(f.persisted()).toEqual(before);
+  });
+
   it('reconciles accepted replacement IDs on the first pass without requiring a retry', () => {
     const f = symbolFixture(2, { 'src/b.ts': 'export function b() {}\n' });
     const oldSource = { ...f.methodNodes[0], id: 'func:src/b.ts:b', filePath: 'src/b.ts', name: 'b' };
