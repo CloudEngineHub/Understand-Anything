@@ -71,6 +71,24 @@ describe('incremental symbol matching', () => {
     expect(compare(nodes, nodes, code, code).missing).toEqual([]);
   });
 
+  it('verifies generic callables even when neither graph contains class nodes', () => {
+    const nodes = [node('run', { lineRange: [1, 1] })];
+    expect(compare(nodes, nodes, 'class A { run() {} }', 'class B { run() {} }')
+      .missing[0].status).toBe('unknown');
+    const opaqueIds = [node('run', { id: 'function:src/a.ts:method.run', lineRange: [1, 1] })];
+    expect(compare(opaqueIds, opaqueIds, 'class A { run() {} }', 'class B { run() {} }')
+      .missing[0].status).toBe('unknown');
+    expect(compare(nodes, [node('run', { lineRange: [2, 2] })],
+      'class A { run() {} }', 'class A { run() {} }\nclass B { run() {} }')
+      .missing[0].status).toBe('still-present');
+    expect(compare(nodes, nodes, 'class A { run() {} }', 'class A { run() {} added() {} }').missing).toEqual([]);
+    const unknown = { status: 'unsupported' };
+    expect(compareFileSymbols(graph(nodes), graph(nodes), unknown, unknown).missing[0].status).toBe('unknown');
+    // Preserving identical current descriptors within one HEAD is a different
+    // operation from accepting an old symbol across source revisions.
+    expect(compareFileSymbols(graph(nodes), graph(nodes), unknown, unknown, true).missing).toEqual([]);
+  });
+
   it('confirms genuine function, class, and method deletions without restoring them', () => {
     const result = compare([node('gone'), node('Old', { type: 'class' }), node('A.removed')], [],
       'function gone() {} class Old {} class A { removed() {} keep() {} }',

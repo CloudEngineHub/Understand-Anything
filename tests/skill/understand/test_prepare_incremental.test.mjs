@@ -232,6 +232,25 @@ afterEach(async () => {
 });
 
 describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
+  it('checks generic method identity against source when both graphs omit every class node', () => {
+    const f = symbolFixture(2, { 'src/a.ts': 'export class A { run() {} }\n' });
+    const generic = { ...f.methodNodes[0], id: 'function:src/a.ts:run', name: 'run', lineRange: [1, 1] };
+    const previous = JSON.parse(f.persisted()[0]);
+    previous.nodes = previous.nodes.filter(node => node.filePath !== 'src/a.ts' || node.type === 'file');
+    previous.nodes.push(generic);
+    previous.edges = [];
+    writeFileSync(join(f.dataDir, 'knowledge-graph.json'), JSON.stringify(previous));
+    writeProjectFile(f.root, 'src/a.ts', 'export class B { run() {} }\n');
+    commit(f.root, 'change owning class');
+    const before = f.persisted();
+    prepare(f.root, f.baseCommit);
+    f.write('batch-1.json', { nodes: [f.fileNode, generic], edges: [] });
+    expect(spawnSync(python, [mergeScript, f.root]).status).toBe(1);
+    expect(f.read('incremental-symbol-report.json').files[0].missing[0]).toMatchObject({ id: generic.id, status: 'unknown' });
+    expect(spawnSync(process.execPath, [finalizeScript, f.root]).status).toBe(1);
+    expect(f.persisted()).toEqual(before);
+  });
+
   it.each([false, true])('preserves current endpoint meanings when baseline IDs are reused (rename again=%s)', renameAgain => {
     const service = names => `export class Service { ${names.map(name => `${name}() { return 1; }`).join(' ')} }\n`;
     const other = 'export class Other { method0() { return 2; } }\n';

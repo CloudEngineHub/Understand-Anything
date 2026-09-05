@@ -79,7 +79,7 @@ Dispatch only `batches[]` from `incremental-symbol-retry.json`, with the usual f
 
 If the helper, repair dispatch, or second merge fails, **STOP** with diagnostics and leave `knowledge-graph.json`, `fingerprints.json`, and `meta.json` unchanged. Other merge failures without eligible unresolved files also stop immediately.
 
-Languages without a deterministic structural parser (including `.sh`, `.ps1`, and `.bat`) cannot have missing symbols automatically confirmed as deleted. These omissions remain `unknown`, including genuine deletions, and require manual investigation or parser support. Do not use supplemental LLM inspection or regex guesses to waive the gate.
+Languages without a deterministic structural parser (including `.sh`, `.ps1`, and `.bat`) cannot have missing symbols automatically confirmed as deleted. Callables without explicit class containment also require source verification when their IDs/names are unchanged, regardless of whether class nodes were emitted; unverified identities block publication. These cases remain `unknown` and require manual investigation or parser support. Do not use supplemental LLM inspection or regex guesses to waive the gate.
 
 Do not dispatch assemble-reviewer or graph-reviewer for automatic updates.
 

@@ -94,7 +94,7 @@ function classOwners(node, graph) {
   return graph.nodes.filter(parent => parent.type === 'class' && parents.has(parent.id));
 }
 
-function hasPreservedIdentity(node, previous, current) {
+function hasPreservedIdentity(node, previous, current, sameRevision = false) {
   const candidate = current.nodes.find(candidate => candidate.id === node.id
     && symbolKind(candidate) === symbolKind(node) && candidate.name === node.name);
   if (!candidate) return false;
@@ -102,11 +102,12 @@ function hasPreservedIdentity(node, previous, current) {
     .map(owner => JSON.stringify([owner.id, owner.name])).sort();
   const oldOwners = owners(node, previous);
   if (JSON.stringify(oldOwners) !== JSON.stringify(owners(candidate, current))) return false;
-  // Generic method IDs do not encode scope. Without a contains owner, class
-  // context requires unique source mapping even if the ID/name stayed equal.
+  // An unowned callable cannot prove its scope: missing class nodes may itself
+  // be analyzer under-reporting. Across revisions always verify it in source.
+  // Within one HEAD, identical descriptors preserve existing current refs;
+  // changed source locations still require matching against that HEAD.
   if (symbolKind(node) === 'callable' && oldOwners.length === 0
-    && ![...nodeNames(node)].some(name => name.includes('.'))
-    && [...previous.nodes, ...current.nodes].some(item => item.type === 'class')) return false;
+    && (!sameRevision || JSON.stringify(node.lineRange) !== JSON.stringify(candidate.lineRange))) return false;
   return true;
 }
 
@@ -132,7 +133,7 @@ function resolveSymbol(node, graph, symbols) {
   return candidates.length === 1 ? candidates[0] : null;
 }
 
-export function compareFileSymbols(previous, current, baseEvidence, headEvidence) {
+export function compareFileSymbols(previous, current, baseEvidence, headEvidence, sameRevision = false) {
   const oldSymbols = previous.nodes.filter(symbolKind);
   const newSymbols = current.nodes.filter(symbolKind);
   const baseSource = sourceSymbols(baseEvidence);
@@ -143,7 +144,7 @@ export function compareFileSymbols(previous, current, baseEvidence, headEvidence
   const replacements = [];
   for (let index = 0; index < oldSymbols.length; index++) {
     const node = oldSymbols[index];
-    if (hasPreservedIdentity(node, previous, current)) continue;
+    if (hasPreservedIdentity(node, previous, current, sameRevision)) continue;
     const entry = { id: node.id, name: node.name, type: node.type, status: 'unknown', reason: '' };
     const old = oldMappings[index];
     if (!old || baseEvidence?.status !== 'succeeded' || headEvidence?.status !== 'succeeded') {
@@ -305,9 +306,9 @@ export async function validateIncrementalSymbols(projectRoot, { graph, intermedi
         // old published graph. Both sides therefore map against HEAD source.
         for (const previous of hasRetry ? retry.currentFiles : []) {
           const current = fileGraph(previous.filePath);
-          const needsEvidence = previous.nodes.some(node => symbolKind(node) && !hasPreservedIdentity(node, previous, current));
+          const needsEvidence = previous.nodes.some(node => symbolKind(node) && !hasPreservedIdentity(node, previous, current, true));
           const evidence = needsEvidence && previous.filePath ? await parseHead(previous.filePath) : undefined;
-          const result = compareFileSymbols(previous, current, evidence, evidence);
+          const result = compareFileSymbols(previous, current, evidence, evidence, true);
           const missing = new Set(result.missing.map(node => node.id));
           const aliases = new Map(result.replacements.map(({ oldId, newId }) => [oldId, newId]));
           for (const node of previous.nodes) {
