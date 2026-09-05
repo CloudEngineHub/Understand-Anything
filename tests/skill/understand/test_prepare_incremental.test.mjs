@@ -247,6 +247,8 @@ describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
     f.write('batch-7-part-2.json', { nodes: [otherFunction, obsolete], edges: [
       { source: otherFile.id, target: otherFunction.id, type: 'contains', direction: 'forward', weight: 1 },
       { source: otherFunction.id, target: obsolete.id, type: 'calls', direction: 'forward', weight: 1 },
+      { source: otherFunction.id, target: f.methodNodes[0].id, type: 'calls', direction: 'forward', weight: 0.8 },
+      { source: f.methodNodes[0].id, target: otherFunction.id, type: 'calls', direction: 'forward', weight: 0.5 },
     ] });
     expect(spawnSync(python, [mergeScript, f.root]).status).toBe(1);
     run(process.execPath, [retryScript, f.root], f.root);
@@ -261,7 +263,9 @@ describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
     const retained = f.read('batch-0.json');
     expect(retained.nodes.find(node => node.id === otherFunction.id)?.summary).toBe(otherFunction.summary);
     expect(retained.nodes.some(node => node.filePath === 'src/a.ts')).toBe(false);
-    expect(retained.edges.some(edge => edge.target === obsolete.id)).toBe(false);
+    expect(retained.edges.some(edge => edge.target === obsolete.id)).toBe(true);
+    expect(retained.edges.some(edge => edge.source === otherFunction.id && edge.target === f.methodNodes[0].id)).toBe(true);
+    expect(retained.edges.some(edge => edge.source === f.methodNodes[0].id)).toBe(false);
     expect(retained.edges.some(edge => edge.target === otherFunction.id)).toBe(true);
     for (const batch of retry.batches) f.write(`batch-${batch.batchIndex}.json`, {
       nodes: [f.fileNode, f.classNode, ...(outcome === 'success' ? f.methodNodes : [f.methodNodes[0]])], edges: [],
@@ -275,6 +279,8 @@ describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
       expect(graph.project.gitCommitHash).toBe(head);
       expect(graph.nodes.find(node => node.id === otherFunction.id)?.summary).toBe(otherFunction.summary);
       expect(graph.nodes.some(node => node.id === obsolete.id)).toBe(false);
+      expect(graph.edges.some(edge => edge.target === obsolete.id)).toBe(false);
+      expect(graph.edges.find(edge => edge.source === otherFunction.id && edge.target === f.methodNodes[0].id)?.weight).toBe(0.8);
     } else {
       expect(merged.status).toBe(1);
       expect(finalized.status).toBe(1);

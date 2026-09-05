@@ -73,7 +73,11 @@ async function main() {
     .map(node => node.id));
   const retained = {
     nodes: assembled.nodes.filter(node => !removedIds.has(node.id)),
-    edges: assembled.edges.filter(edge => !removedIds.has(edge.source) && !removedIds.has(edge.target)),
+    // Other files are not reanalyzed. Preserve their current inbound edge
+    // candidates until replacement nodes exist; merge resolves their endpoints
+    // and drops candidates whose targets were actually removed. Only outgoing
+    // edges from the affected files need regeneration by the retry analyzer.
+    edges: assembled.edges.filter(edge => !removedIds.has(edge.source)),
   };
 
   // Persist the attempt BEFORE mutating batches: a crash must not buy another
