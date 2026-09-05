@@ -278,6 +278,7 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
     structure: StructuralAnalysis | null;
     leafTexts: string[];
     hasUnresolvedNames: boolean;
+    language?: string;
   } {
     let tree: ReturnType<TreeSitterParser["parse"]> = null;
     try {
@@ -318,6 +319,7 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
       }
       return {
         status: "succeeded",
+        language: langKey!,
         structure,
         leafTexts: [...leafTexts],
         hasUnresolvedNames,
