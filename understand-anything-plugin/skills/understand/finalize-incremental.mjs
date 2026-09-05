@@ -22,6 +22,7 @@ import {
   renameSync,
   writeFileSync,
 } from 'node:fs';
+import { validateIncrementalSymbols, formatSymbolReport } from './validate-incremental-symbols.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pluginRoot = resolve(__dirname, '../..');
@@ -375,7 +376,7 @@ function projectMetadata(previousProject, plan, scan) {
   };
 }
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   if (args.length !== 1 || args[0].startsWith('--')) {
     throw new Error('Usage: node finalize-incremental.mjs <projectRoot>');
@@ -470,6 +471,10 @@ function main() {
 
     // Ordering is intentional: a failed graph save must never advance the
     // structural baseline and hide the failed update from the next run.
+    // Recheck the actual graph being saved, never trust a prior merge report.
+    const symbolReport = await validateIncrementalSymbols(projectRoot, { graph, intermediateDir });
+    process.stderr.write(`${formatSymbolReport(symbolReport)}\n`);
+    if (!symbolReport.ok) throw new Error('Unresolved incremental symbol loss; baseline not advanced');
     atomicWriteJson(graphPath, graph);
   }
 
@@ -491,7 +496,7 @@ function isCliEntry() {
 
 if (isCliEntry()) {
   try {
-    main();
+    await main();
   } catch (error) {
     process.stderr.write(`finalize-incremental.mjs failed: ${error.message}\n${error.stack}\n`);
     process.exit(1);

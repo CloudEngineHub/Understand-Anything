@@ -20,6 +20,7 @@ Input/output live under the project's data dir (`.ua/`, or legacy
 import json
 import os
 import re
+import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
@@ -1290,6 +1291,18 @@ def main() -> None:
 
     size_kb = output_path.stat().st_size / 1024
     print(f"\nWritten to {output_path} ({size_kb:.0f} KB)", file=sys.stderr)
+
+    # The old symbols live outside batch-existing.json, which intentionally
+    # excludes reanalyzed files. Keep failed output as a diagnostic artifact,
+    # but return failure so the orchestrator repairs it before publication.
+    plan_path = intermediate_dir / "incremental-plan.json"
+    if plan_path.exists():
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        if plan.get("action") in ("PARTIAL_UPDATE", "ARCHITECTURE_UPDATE"):
+            validator = Path(__file__).resolve().with_name("validate-incremental-symbols.mjs")
+            result = subprocess.run(["node", str(validator), str(project_root)], check=False)
+            if result.returncode != 0:
+                sys.exit(result.returncode)
 
 
 if __name__ == "__main__":

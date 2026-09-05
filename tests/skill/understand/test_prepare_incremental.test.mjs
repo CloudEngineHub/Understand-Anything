@@ -187,12 +187,141 @@ function prepare(root, baseCommit, extraArgs = []) {
   };
 }
 
+function symbolFixture(count = 20) {
+  const source = methods => `export class Service {\n${methods.map(name => `  ${name}() { return 1; }`).join('\n')}\n}\n`;
+  const names = Array.from({ length: count }, (_, i) => `method${i}`);
+  const fixture = setupRepository({
+    'src/a.ts': source(names),
+    'src/b.ts': 'export const b = 1;\n',
+    'src/c.ts': 'export const c = 1;\n',
+    'src/d.ts': 'export const d = 1;\n',
+  });
+  const { root } = fixture;
+  const dataDir = join(root, '.ua');
+  const intermediate = join(dataDir, 'intermediate');
+  const graphPath = join(dataDir, 'knowledge-graph.json');
+  const graph = JSON.parse(readFileSync(graphPath, 'utf8'));
+  const classNode = {
+    id: 'class:src/a.ts:Service', name: 'Service', type: 'class', filePath: 'src/a.ts',
+    summary: 'Service', tags: [], complexity: 'simple',
+  };
+  const methodNodes = names.map(name => ({
+    ...classNode, id: `function:src/a.ts:Service.${name}`, name: `Service.${name}`, type: 'function',
+  }));
+  graph.nodes.push(classNode, ...methodNodes);
+  graph.edges.push(...methodNodes.map(node => ({
+    source: classNode.id, target: node.id, type: 'contains', direction: 'forward', weight: 1,
+  })));
+  writeFileSync(graphPath, JSON.stringify(graph));
+  const fileNode = graph.nodes.find(node => node.id === 'file:src/a.ts');
+  const read = name => JSON.parse(readFileSync(join(intermediate, name), 'utf8'));
+  const write = (name, value) => writeFileSync(join(intermediate, name), JSON.stringify(value));
+  const persisted = () => ['knowledge-graph.json', 'fingerprints.json', 'meta.json']
+    .map(name => readFileSync(join(dataDir, name), 'utf8'));
+  return { ...fixture, intermediate, dataDir, source, names, fileNode, classNode, methodNodes, read, write, persisted };
+}
+
 afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   // These integration tests intentionally use synchronous child processes.
   // Yield between cases so Vitest workers can service task-update RPC replies,
   // especially on slower Windows runners where the full file exceeds 60s.
   await new Promise(resolve => setImmediate(resolve));
+});
+
+describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
+  it('lists all 19 missing methods and blocks merge and direct finalize without advancing any baseline', () => {
+    const f = symbolFixture();
+    writeProjectFile(f.root, 'src/a.ts', f.source([...f.names, 'added']));
+    commit(f.root, 'add method');
+    const before = f.persisted();
+    prepare(f.root, f.baseCommit);
+    f.write('batch-0.json', { nodes: [f.fileNode, f.classNode, f.methodNodes[0]], edges: [] });
+    const merge = spawnSync(python, [mergeScript, f.root], { encoding: 'utf8' });
+    expect(merge.status).toBe(1);
+    const report = f.read('incremental-symbol-report.json');
+    expect(report.ok).toBe(false);
+    expect(report.files[0].missing).toHaveLength(19);
+    expect(report.files[0].missing.every(node => node.status === 'still-present')).toBe(true);
+    for (const method of f.methodNodes.slice(1)) expect(merge.stderr).toContain(method.id);
+    // A forged/stale merge success cannot bypass finalization's shared check.
+    f.write('incremental-symbol-report.json', { ok: true });
+    const finalize = spawnSync(process.execPath, [finalizeScript, f.root], { encoding: 'utf8' });
+    expect(finalize.status).toBe(1);
+    expect(finalize.stderr).toContain('baseline not advanced');
+    expect(f.persisted()).toEqual(before);
+  });
+
+  it('keeps the original symbol baseline and removes stale complete/split batches on repeated prepare', () => {
+    const f = symbolFixture(2);
+    writeProjectFile(f.root, 'src/a.ts', f.source([...f.names, 'added']));
+    const headCommit = commit(f.root, 'add method');
+    prepare(f.root, f.baseCommit);
+    const original = f.read('incremental-symbol-baseline.json');
+    // Simulate a graph save followed by a failure before fingerprints/meta.
+    const graphPath = join(f.dataDir, 'knowledge-graph.json');
+    const partial = JSON.parse(readFileSync(graphPath, 'utf8'));
+    partial.project.gitCommitHash = headCommit;
+    partial.nodes = partial.nodes.filter(node => node.id !== f.methodNodes[1].id);
+    writeFileSync(graphPath, JSON.stringify(partial));
+    for (const name of ['batch-0.json', 'batch-0-part-1.json', 'batch-0-part-2.json']) {
+      f.write(name, { nodes: [f.methodNodes[1]], edges: [] });
+    }
+    prepare(f.root, f.baseCommit);
+    expect(f.read('incremental-symbol-baseline.json')).toEqual(original);
+    for (const name of ['batch-0.json', 'batch-0-part-1.json', 'batch-0-part-2.json']) {
+      expect(() => f.read(name)).toThrow();
+    }
+  });
+
+  it('allows a source-confirmed method deletion and does not restore old nodes or edges', () => {
+    const f = symbolFixture(2);
+    writeProjectFile(f.root, 'src/a.ts', f.source([f.names[0]]));
+    const head = commit(f.root, 'delete method');
+    prepare(f.root, f.baseCommit);
+    f.write('batch-0.json', { nodes: [f.fileNode, f.classNode, f.methodNodes[0]], edges: [] });
+    run(python, [mergeScript, f.root], f.root);
+    expect(f.read('incremental-symbol-report.json').files[0].missing[0].status).toBe('deleted');
+    run(process.execPath, [finalizeScript, f.root], f.root);
+    const graph = JSON.parse(f.persisted()[0]);
+    expect(graph.project.gitCommitHash).toBe(head);
+    expect(graph.nodes.some(node => node.id === f.methodNodes[1].id)).toBe(false);
+    expect(graph.edges.some(edge => edge.target === f.methodNodes[1].id)).toBe(false);
+  });
+
+  it.each(['delete', 'exclude'])('allows an explicit file %s with old symbols', operation => {
+    const f = symbolFixture(2);
+    if (operation === 'delete') {
+      unlinkSync(join(f.root, 'src/a.ts'));
+      commit(f.root, 'delete file');
+    }
+    prepare(f.root, f.baseCommit, operation === 'exclude' ? ['--exclude', 'src/a.ts'] : []);
+    expect(f.read('incremental-symbol-baseline.json').files).toEqual([]);
+    run(python, [mergeScript, f.root], f.root);
+    run(process.execPath, [finalizeScript, f.root], f.root);
+    expect(JSON.parse(f.persisted()[0]).nodes.some(node => node.filePath === 'src/a.ts')).toBe(false);
+  });
+
+  it('uses legacy data directories and refuses a missing or mismatched symbol snapshot', () => {
+    const f = symbolFixture(2);
+    writeProjectFile(f.root, 'src/a.ts', f.source([...f.names, 'added']));
+    commit(f.root, 'add method');
+    const legacy = join(f.root, '.understand-anything');
+    renameSync(f.dataDir, legacy);
+    run(process.execPath, [prepareScript, f.root, f.baseCommit], f.root);
+    const intermediate = join(legacy, 'intermediate');
+    const baselinePath = join(intermediate, 'incremental-symbol-baseline.json');
+    const baseline = JSON.parse(readFileSync(baselinePath, 'utf8'));
+    expect(baseline.files[0].nodes).toHaveLength(4);
+    writeFileSync(join(intermediate, 'batch-0.json'), JSON.stringify({
+      nodes: [f.fileNode, f.classNode, ...f.methodNodes], edges: [],
+    }));
+    baseline.headCommit = f.baseCommit;
+    writeFileSync(baselinePath, JSON.stringify(baseline));
+    expect(spawnSync(python, [mergeScript, f.root]).status).toBe(1);
+    unlinkSync(baselinePath);
+    expect(spawnSync(process.execPath, [finalizeScript, f.root]).status).toBe(1);
+  });
 });
 
 describe('prepare-incremental.mjs', { timeout: 30_000 }, () => {
