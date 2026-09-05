@@ -424,7 +424,7 @@ This helper revalidates the candidate, records attempt 1/1 for the base/head com
 
 If repair preparation, the repair dispatch, or the second merge fails, **STOP** and retain diagnostics. Do not publish or advance `knowledge-graph.json`, `fingerprints.json`, or `meta.json`. Never concatenate old nodes or old semantic edges into the candidate to satisfy the gate. Other merge failures without eligible unresolved files stop immediately. On success, continue to the applicable architecture/tour phases.
 
-Parser limitation: languages without a deterministic structural parser (including `.sh`, `.ps1`, and `.bat`) cannot have missing symbols automatically confirmed as deleted. Such omissions remain `unknown`, even for genuine deletions, and stop publication pending manual investigation or parser support. Supplemental LLM source inspection and regex guesses are not deletion evidence. Preserved symbols with unchanged IDs/names do not require a parser.
+Parser limitation: languages without a deterministic structural parser (including `.sh`, `.ps1`, and `.bat`) cannot have missing symbols automatically confirmed as deleted. Such omissions remain `unknown`, even for genuine deletions, and stop publication pending manual investigation or parser support. Supplemental LLM source inspection and regex guesses are not deletion evidence. Preserved symbols with unchanged IDs/names and unambiguous ownership do not require a parser. An unchanged generic method ID cannot stand in for a different class's method; changed or ambiguous containment requires source identity verification.
 
 ---
 

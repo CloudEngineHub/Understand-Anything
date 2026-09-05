@@ -76,8 +76,7 @@ function sourceSymbols(evidence) {
   return symbols;
 }
 
-function resolveSymbol(node, graph, symbols) {
-  const kind = symbolKind(node);
+function nodeNames(node) {
   const path = normalizePath(node.filePath);
   const names = new Set([qualifiedName(node.name)]);
   // Accept ID spelling changes, including func/function and class separators.
@@ -86,6 +85,34 @@ function resolveSymbol(node, graph, symbols) {
   if (typeof node.id === 'string' && node.id.includes(marker)) {
     names.add(qualifiedName(node.id.slice(node.id.indexOf(marker) + marker.length)));
   }
+  return names;
+}
+
+function classOwners(node, graph) {
+  const parents = new Set(graph.edges.filter(edge => edge.type === 'contains' && edge.target === node.id)
+    .map(edge => edge.source));
+  return graph.nodes.filter(parent => parent.type === 'class' && parents.has(parent.id));
+}
+
+function hasPreservedIdentity(node, previous, current) {
+  const candidate = current.nodes.find(candidate => candidate.id === node.id
+    && symbolKind(candidate) === symbolKind(node) && candidate.name === node.name);
+  if (!candidate) return false;
+  const owners = (item, graph) => classOwners(item, graph)
+    .map(owner => JSON.stringify([owner.id, owner.name])).sort();
+  const oldOwners = owners(node, previous);
+  if (JSON.stringify(oldOwners) !== JSON.stringify(owners(candidate, current))) return false;
+  // Generic method IDs do not encode scope. Without a contains owner, class
+  // context requires unique source mapping even if the ID/name stayed equal.
+  if (symbolKind(node) === 'callable' && oldOwners.length === 0
+    && ![...nodeNames(node)].some(name => name.includes('.'))
+    && [...previous.nodes, ...current.nodes].some(item => item.type === 'class')) return false;
+  return true;
+}
+
+function resolveSymbol(node, graph, symbols) {
+  const kind = symbolKind(node);
+  const names = nodeNames(node);
   let candidates = symbols.filter(symbol => symbol.kind === kind && (
     names.has(qualifiedName(symbol.name))
     || (symbol.owner && names.has(qualifiedName(`${symbol.owner}.${symbol.name}`)))
@@ -93,16 +120,13 @@ function resolveSymbol(node, graph, symbols) {
   const qualified = candidates.filter(symbol => symbol.owner
     && names.has(qualifiedName(`${symbol.owner}.${symbol.name}`)));
   if (qualified.length) candidates = qualified;
-  const parentIds = new Set(graph.edges.filter(edge => edge.type === 'contains' && edge.target === node.id)
-    .map(edge => edge.source));
-  const owners = graph.nodes.filter(parent => parent.type === 'class' && parentIds.has(parent.id))
-    .map(parent => parent.name);
+  const owners = classOwners(node, graph).map(parent => parent.name);
   if (owners.length) candidates = candidates.filter(symbol => owners.includes(symbol.owner));
   // Lines locate ownership within one revision only; they are never identity
   // across revisions. Do not use lines to guess among overloads/same-name classes.
   if (candidates.length > 1 && Array.isArray(node.lineRange)) {
-    const located = candidates.filter(symbol => symbol.owner
-      && node.lineRange[0] >= symbol.lineRange[0] && node.lineRange[1] <= symbol.lineRange[1]);
+    const located = candidates.filter(symbol => node.lineRange[0] >= symbol.lineRange[0]
+      && node.lineRange[1] <= symbol.lineRange[1]);
     if (located.length === 1) candidates = located;
   }
   return candidates.length === 1 ? candidates[0] : null;
@@ -119,8 +143,7 @@ export function compareFileSymbols(previous, current, baseEvidence, headEvidence
   const replacements = [];
   for (let index = 0; index < oldSymbols.length; index++) {
     const node = oldSymbols[index];
-    if (newSymbols.some(candidate => candidate.id === node.id
-      && symbolKind(candidate) === symbolKind(node) && candidate.name === node.name)) continue;
+    if (hasPreservedIdentity(node, previous, current)) continue;
     const entry = { id: node.id, name: node.name, type: node.type, status: 'unknown', reason: '' };
     const old = oldMappings[index];
     if (!old || baseEvidence?.status !== 'succeeded' || headEvidence?.status !== 'succeeded') {
@@ -132,7 +155,9 @@ export function compareFileSymbols(previous, current, baseEvidence, headEvidence
       const graphMatches = newMappings.filter(symbol => symbol && symbolKey(symbol) === symbolKey(old));
       if (matches.length === 1 && graphMatches.length === 1) {
         const matchedIndex = newMappings.findIndex(symbol => symbol && symbolKey(symbol) === symbolKey(old));
-        replacements.push({ oldId: node.id, newId: newSymbols[matchedIndex].id });
+        if (newSymbols[matchedIndex].id !== node.id) {
+          replacements.push({ oldId: node.id, newId: newSymbols[matchedIndex].id });
+        }
         continue;
       }
       if (matches.length === 1) {
@@ -231,8 +256,7 @@ export async function validateIncrementalSymbols(projectRoot, { graph, intermedi
       const current = fileGraph(previous.filePath);
       let baseEvidence;
       let headEvidence;
-      if (previous.nodes.some(node => symbolKind(node) && !current.nodes.some(candidate => candidate.id === node.id
-        && candidate.name === node.name && symbolKind(candidate) === symbolKind(node)))) {
+      if (previous.nodes.some(node => symbolKind(node) && !hasPreservedIdentity(node, previous, current))) {
         try {
           const evidence = await parseRevisions(previous.filePath);
           baseEvidence = evidence.base;

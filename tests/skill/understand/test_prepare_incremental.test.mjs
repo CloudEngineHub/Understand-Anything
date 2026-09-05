@@ -232,6 +232,34 @@ afterEach(async () => {
 });
 
 describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
+  it('blocks owner substitution behind an unchanged generic method ID in merge and finalize', () => {
+    const otherSource = 'export class Other { method0() { return 2; } }\n';
+    const f = symbolFixture(2, {
+      'src/a.ts': 'export class Service { method0() { return 1; } method1() { return 1; } }\n' + otherSource,
+    });
+    const generic = { ...f.methodNodes[0], id: 'function:src/a.ts:method0', name: 'method0' };
+    const otherClass = { ...f.classNode, id: 'class:src/a.ts:Other', name: 'Other' };
+    const previous = JSON.parse(f.persisted()[0]);
+    previous.nodes = previous.nodes.map(node => node.id === f.methodNodes[0].id ? generic : node);
+    previous.nodes.push(otherClass);
+    previous.edges = previous.edges.map(edge => edge.target === f.methodNodes[0].id ? { ...edge, target: generic.id } : edge);
+    writeFileSync(join(f.dataDir, 'knowledge-graph.json'), JSON.stringify(previous));
+    writeProjectFile(f.root, 'src/a.ts', f.source([...f.names, 'added']) + otherSource);
+    commit(f.root, 'add method');
+    const before = f.persisted();
+    prepare(f.root, f.baseCommit);
+    f.write('batch-1.json', {
+      nodes: [f.fileNode, f.classNode, otherClass, generic, f.methodNodes[1]],
+      edges: [{ source: otherClass.id, target: generic.id, type: 'contains', direction: 'forward', weight: 1 }],
+    });
+    expect(spawnSync(python, [mergeScript, f.root]).status).toBe(1);
+    expect(f.read('incremental-symbol-report.json').files[0].missing).toContainEqual(expect.objectContaining({
+      id: generic.id, name: generic.name, status: 'still-present',
+    }));
+    expect(spawnSync(process.execPath, [finalizeScript, f.root]).status).toBe(1);
+    expect(f.persisted()).toEqual(before);
+  });
+
   it('reconciles accepted replacement IDs on the first pass without requiring a retry', () => {
     const f = symbolFixture(2, { 'src/b.ts': 'export function b() {}\n' });
     const oldSource = { ...f.methodNodes[0], id: 'func:src/b.ts:b', filePath: 'src/b.ts', name: 'b' };

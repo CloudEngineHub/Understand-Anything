@@ -48,6 +48,29 @@ describe('incremental symbol matching', () => {
     expect(result.missing[0]).toMatchObject({ name: 'run', status: 'still-present' });
   });
 
+  it('does not let an unchanged generic ID hide a changed or missing class owner', () => {
+    const code = 'class A { run() {} }\nclass B { run() {} }';
+    const classes = ['A', 'B'].map(name => node(name, { id: `class:src/a.ts:${name}`, type: 'class' }));
+    const previous = graph([...classes, node('run')]);
+    previous.edges = [{ source: classes[0].id, target: node('run').id, type: 'contains' }];
+    for (const edges of [[], [{ source: classes[1].id, target: node('run').id, type: 'contains' }]]) {
+      const current = { ...graph([...classes, node('run')]), edges };
+      const result = compareFileSymbols(previous, current, parse(code), parse(code));
+      expect(result.missing[0]).toMatchObject({ id: node('run').id, status: 'still-present' });
+      expect(compareFileSymbols(previous, current, { status: 'unsupported' }, { status: 'unsupported' })
+        .missing[0].status).toBe('unknown');
+    }
+    expect(compareFileSymbols(previous, previous).missing).toEqual([]);
+    const ambiguous = graph([...classes, node('run')]);
+    expect(compareFileSymbols(ambiguous, ambiguous, parse(code), parse(code)).missing[0].status).toBe('unknown');
+  });
+
+  it('accepts a top-level function sharing a name with a method when source locations establish ownership', () => {
+    const code = 'function run() {}\nclass A { run() {} }';
+    const nodes = [node('A', { type: 'class', id: 'class:src/a.ts:A' }), node('run', { lineRange: [1, 1] })];
+    expect(compare(nodes, nodes, code, code).missing).toEqual([]);
+  });
+
   it('confirms genuine function, class, and method deletions without restoring them', () => {
     const result = compare([node('gone'), node('Old', { type: 'class' }), node('A.removed')], [],
       'function gone() {} class Old {} class A { removed() {} keep() {} }',
