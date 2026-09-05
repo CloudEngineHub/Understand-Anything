@@ -416,6 +416,8 @@ Before dropping dangling endpoints, merge records normalized edge candidates fro
 
 Candidate endpoints use the current analysis's node and ownership descriptors before any baseline alias is applied: an ID reused by a different current symbol must keep its current meaning. During repair, incoming edges are deferred outside the ordinary retained batch until those original HEAD descriptors can be matched against replacement nodes, so temporary ID reuse cannot create a false edge during merge.
 
+A syntactically valid parse is insufficient to prove deletion when declaration names remain computed or escaped. The strict parser marks this uncertainty, and missing symbols remain `unknown` rather than being treated as deleted merely because their literal spelling is absent.
+
 When the report has `unresolvedFiles`, prepare exactly one repair:
 
 ```bash

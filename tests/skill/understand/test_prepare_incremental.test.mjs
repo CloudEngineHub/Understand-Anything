@@ -232,6 +232,23 @@ afterEach(async () => {
 });
 
 describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
+  it('does not publish a missing method whose computed source name still denotes the old symbol', () => {
+    const f = symbolFixture(2);
+    const source = 'export class Service { ["method" + "0"]() { return 1; } method1() {} }\n';
+    expect(Object.hasOwn(class { ['method' + '0']() {} }.prototype, 'method0')).toBe(true);
+    writeProjectFile(f.root, 'src/a.ts', source);
+    commit(f.root, 'use a computed method name');
+    const before = f.persisted();
+    prepare(f.root, f.baseCommit);
+    f.write('batch-1.json', { nodes: [f.fileNode, f.classNode, f.methodNodes[1]], edges: [] });
+    expect(spawnSync(python, [mergeScript, f.root]).status).toBe(1);
+    expect(f.read('incremental-symbol-report.json').files[0].missing[0]).toMatchObject({
+      id: f.methodNodes[0].id, status: 'unknown',
+    });
+    expect(spawnSync(process.execPath, [finalizeScript, f.root]).status).toBe(1);
+    expect(f.persisted()).toEqual(before);
+  });
+
   it('checks generic method identity against source when both graphs omit every class node', () => {
     const f = symbolFixture(2, { 'src/a.ts': 'export class A { run() {} }\n' });
     const generic = { ...f.methodNodes[0], id: 'function:src/a.ts:run', name: 'run', lineRange: [1, 1] };

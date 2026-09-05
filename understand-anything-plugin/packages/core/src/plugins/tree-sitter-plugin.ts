@@ -277,6 +277,7 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
     status: "succeeded" | "unsupported" | "failed";
     structure: StructuralAnalysis | null;
     leafTexts: string[];
+    hasUnresolvedNames: boolean;
   } {
     let tree: ReturnType<TreeSitterParser["parse"]> = null;
     try {
@@ -284,26 +285,45 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
       const langKey = this.languageKeyFromPath(filePath);
       const extractor = langKey ? this.getExtractor(langKey) : null;
       if (!parser || !extractor) {
-        return { status: "unsupported", structure: null, leafTexts: [] };
+        return { status: "unsupported", structure: null, leafTexts: [], hasUnresolvedNames: false };
       }
       tree = parser.parse(content);
       if (!tree || tree.rootNode.hasError) {
-        return { status: "failed", structure: null, leafTexts: [] };
+        return { status: "failed", structure: null, leafTexts: [], hasUnresolvedNames: false };
       }
       const leafTexts = new Set<string>();
+      const structure = extractor.extractStructure(tree.rootNode);
+      const declarationNames = [
+        ...structure.functions.map(fn => fn.name),
+        ...structure.classes.flatMap(cls => [cls.name, ...cls.methods, ...cls.properties]),
+      ];
+      let hasUnresolvedNames = declarationNames.some(name =>
+        name.includes("\\") || name.includes("`") || name.startsWith("@")
+        || name.startsWith("r#") || name.normalize("NFKC") !== name,
+      );
       const pending = [tree.rootNode];
       while (pending.length > 0) {
         const node = pending.pop()!;
+        const methodName = ["method_definition", "method_signature", "abstract_method_signature"].includes(node.type)
+          ? node.childForFieldName("name") : null;
+        // Valid syntax is not necessarily a name the extractor can resolve.
+        // Computed members and escaped spellings can denote an old symbol
+        // without its literal name appearing anywhere among the AST leaves.
+        if (node.type === "computed_property_name"
+          || (methodName?.type === "string" && methodName.text.includes("\\"))) {
+          hasUnresolvedNames = true;
+        }
         if (node.childCount === 0) leafTexts.add(node.text);
         else pending.push(...node.children);
       }
       return {
         status: "succeeded",
-        structure: extractor.extractStructure(tree.rootNode),
+        structure,
         leafTexts: [...leafTexts],
+        hasUnresolvedNames,
       };
     } catch {
-      return { status: "failed", structure: null, leafTexts: [] };
+      return { status: "failed", structure: null, leafTexts: [], hasUnresolvedNames: false };
     } finally {
       tree?.delete();
     }

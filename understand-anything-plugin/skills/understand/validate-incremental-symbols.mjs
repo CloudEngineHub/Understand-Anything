@@ -168,6 +168,10 @@ export function compareFileSymbols(previous, current, baseEvidence, headEvidence
         entry.reason = 'Current source has ambiguous same-name symbols';
       } else if (headSource.length === 0) {
         entry.reason = 'Empty structural extraction is not proof of deletion';
+      } else if (typeof baseEvidence.hasUnresolvedNames !== 'boolean' || typeof headEvidence.hasUnresolvedNames !== 'boolean') {
+        entry.reason = 'Strict parser lacks name-resolution evidence; rebuild the core package';
+      } else if (baseEvidence.hasUnresolvedNames || headEvidence.hasUnresolvedNames) {
+        entry.reason = 'Computed or escaped declaration names prevent confirming source deletion';
       } else if (headSource.some(symbol => symbol.name === old.name)
         || (headEvidence.leafTexts ?? []).some(text => qualifiedName(text.replace(/^['"`]|['"`]$/g, '')) === qualifiedName(old.name))) {
         entry.reason = 'Name remains in source; moved or unsupported syntax cannot be ruled out';

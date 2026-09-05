@@ -376,6 +376,21 @@ export class Greeter {
       expect(strict.structure).toEqual(plugin.analyzeFile("test.ts", code));
       expect(strict.structure?.classes[0].methods).toEqual(["run"]);
       expect(strict.leafTexts).toContain("callback");
+      expect(strict.hasUnresolvedNames).toBe(false);
+    });
+
+    it("exposes unresolved computed and escaped declaration names", () => {
+      for (const code of [
+        'class A { ["r" + "un"]() {} keep() {} }',
+        String.raw`class A { r\u0075n() {} keep() {} }`,
+        String.raw`class A { "r\u0075n"() {} keep() {} }`,
+      ]) {
+        const result = plugin.analyzeFileStrict("test.js", code);
+        expect(result.status).toBe("succeeded");
+        expect(result.hasUnresolvedNames).toBe(true);
+      }
+      expect(plugin.analyzeFileStrict("test.js", String.raw`function keep(r\u0075n) { return r\u0075n; }`)
+        .hasUnresolvedNames).toBe(false);
     });
   });
 

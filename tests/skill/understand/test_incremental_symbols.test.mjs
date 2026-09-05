@@ -101,6 +101,9 @@ describe('incremental symbol matching', () => {
     ['empty extraction', '// everything removed'],
     ['unextracted arrow method', 'class A { run = () => {}; }'],
     ['computed method', 'class A { ["run"]() {} }'],
+    ['computed name fragments', 'class A { ["r" + "un"]() {} keep() {} }'],
+    ['escaped identifier', String.raw`class A { r\u0075n() {} keep() {} }`],
+    ['escaped string method name', String.raw`class A { "r\u0075n"() {} keep() {} }`],
     ['moved method', 'class B { run() {} }'],
   ])('treats %s as unknown, never deletion', (_label, code) => {
     expect(compare([node('A.run')], [], 'class A { run() {} }', code).missing[0].status).toBe('unknown');
@@ -111,6 +114,16 @@ describe('incremental symbol matching', () => {
       const result = compareFileSymbols(graph([node('lost')]), graph([]), evidence, parse('function keep() {}'));
       expect(result.missing[0].status).toBe('unknown');
     }
+  });
+
+  it('does not confirm deletion when escaped names disappear or strict-parser evidence is outdated', () => {
+    const escaped = String.raw`A.r\u0075n`;
+    expect(compare([node(escaped)], [], String.raw`class A { r\u0075n() {} }`, 'class A { run() {} keep() {} }')
+      .missing[0].status).toBe('unknown');
+    const outdated = { ...parse('class A { keep() {} }') };
+    delete outdated.hasUnresolvedNames;
+    const result = compareFileSymbols(graph([node('A.run')]), graph([]), parse('class A { run() {} }'), outdated);
+    expect(result.missing[0].status).toBe('unknown');
   });
 
   it('cannot use one new node to replace two old nodes with the same source identity', () => {
