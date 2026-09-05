@@ -7,7 +7,7 @@ import type {
   CallGraphEntry,
 } from "../types.js";
 import type { LanguageConfig } from "../languages/types.js";
-import type { LanguageExtractor } from "./extractors/types.js";
+import type { LanguageExtractor, TreeSitterNode } from "./extractors/types.js";
 import { builtinExtractors } from "./extractors/index.js";
 
 // web-tree-sitter uses CJS internally; we need createRequire for .wasm resolution
@@ -15,6 +15,42 @@ const require = createRequire(import.meta.url);
 
 type TreeSitterParser = import("web-tree-sitter").Parser;
 type TreeSitterLanguage = import("web-tree-sitter").Language;
+
+const RUBY_ACCESSORS = new Set(["attr", "attr_accessor", "attr_reader", "attr_writer"]);
+
+function rubyLiteralName(arg: TreeSitterNode): string | null {
+  if (arg.type === "simple_symbol" && !arg.text.includes("\\")) return arg.text.slice(1) || null;
+  if (["string", "delimited_symbol"].includes(arg.type)
+    && arg.namedChildren.every(child => child.type === "string_content")) {
+    return arg.namedChildren.map(child => child.text).join("") || null;
+  }
+  return null;
+}
+
+function rubyAccessorEvidence(node: TreeSitterNode): { unresolved: boolean; names: string[] } | null {
+  if (node.type !== "call") return null;
+  const method = node.childForFieldName("method")?.text;
+  const args = [...(node.childForFieldName("arguments")?.namedChildren ?? [])];
+  if (method && ["method", "public_method", "instance_method", "public_instance_method", "singleton_method"].includes(method)
+    && args.length) {
+    const target = rubyLiteralName(args[0]);
+    // Retrieving an accessor for a later call loses its argument evidence.
+    if (!target || RUBY_ACCESSORS.has(target)) return { unresolved: true, names: [] };
+  }
+  if (!method || !RUBY_ACCESSORS.has(method)) return null;
+  let writer = method === "attr_writer" || method === "attr_accessor";
+  if (method === "attr" && args.length === 2 && ["true", "false"].includes(args[1].type)) {
+    writer = args.pop()!.type === "true";
+  }
+  const names = [];
+  for (const arg of args) {
+    const name = rubyLiteralName(arg);
+    if (!name) return { unresolved: true, names: [] };
+    if (method !== "attr_writer") names.push(name);
+    if (writer) names.push(`${name}=`);
+  }
+  return { unresolved: false, names };
+}
 
 /**
  * Config-driven tree-sitter plugin.
@@ -303,14 +339,15 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
         || name.startsWith("r#") || name.normalize("NFKC") !== name,
       );
       const isJavaScriptExtractor = extractor.languageIds.some(id => id === "typescript" || id === "javascript");
+      const isRubyExtractor = extractor.languageIds.includes("ruby");
       const propertyDefinitionNames = new Set(["defineProperty", "defineProperties", "__defineGetter__", "__defineSetter__"]);
       const runtimeInstallers = new Set<string>();
       if (isJavaScriptExtractor) {
         for (const name of ["eval", "Function"]) runtimeInstallers.add(name);
       }
-      if (extractor.languageIds.includes("ruby")) {
-        for (const name of ["define_method", "define_singleton_method", "alias_method", "attr", "attr_accessor", "attr_reader",
-          "attr_writer", "class_eval", "module_eval", "instance_eval", "class_exec", "module_exec", "instance_exec",
+      if (isRubyExtractor) {
+        for (const name of ["define_method", "define_singleton_method", "alias_method",
+          "class_eval", "module_eval", "instance_eval", "class_exec", "module_exec", "instance_exec",
           "eval", "send", "public_send", "__send__"]) runtimeInstallers.add(name);
       }
       if (extractor.languageIds.includes("python")) {
@@ -321,6 +358,13 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
       const pending = [tree.rootNode];
       while (pending.length > 0) {
         const node = pending.pop()!;
+        if (isRubyExtractor) {
+          const accessor = rubyAccessorEvidence(node);
+          if (accessor?.unresolved) hasUnresolvedNames = true;
+          // Static readers/writers only prevent deleting those exact names;
+          // an unrelated attr token or accessor cannot taint the entire file.
+          for (const name of accessor?.names ?? []) leafTexts.add(name);
+        }
         // Name references also cover local aliases and dynamic dispatch. These
         // languages can install methods without any structural declaration.
         if (node.childCount === 0 && runtimeInstallers.has(node.text)) hasUnresolvedNames = true;

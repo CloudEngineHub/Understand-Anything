@@ -232,6 +232,24 @@ afterEach(async () => {
 });
 
 describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
+  it('publishes genuine Ruby method deletion beside a static attr and an ordinary attr call', () => {
+    const path = 'src/accessor.rb';
+    const f = symbolFixture(2, { [path]: 'class A\n def run; end\n attr :name\nend\nobj.attr\n' });
+    const previous = JSON.parse(f.persisted()[0]);
+    const method = { ...f.methodNodes[0], id: `function:${path}:A.run`, name: 'A.run', filePath: path };
+    previous.nodes.push(method);
+    writeFileSync(join(f.dataDir, 'knowledge-graph.json'), JSON.stringify(previous));
+    writeProjectFile(f.root, path, 'class A\n def keep; end\n attr :name\nend\nobj.attr\n');
+    const head = commit(f.root, 'delete method beside static accessor');
+    prepare(f.root, f.baseCommit);
+    f.write('batch-1.json', { nodes: [previous.nodes.find(node => node.id === `file:${path}`)], edges: [] });
+    run(python, [mergeScript, f.root], f.root);
+    run(process.execPath, [finalizeScript, f.root], f.root);
+    const published = JSON.parse(f.persisted()[0]);
+    expect(published.project.gitCommitHash).toBe(head);
+    expect(published.nodes.some(node => node.id === method.id)).toBe(false);
+  });
+
   it.each([
     ['rb', 'class A\n def run; end\nend\n', 'class A\n def keep; end\n define_method(("r" + "un").to_sym) { 1 }\nend\n'],
     ['rb', 'class A\n def run; end\nend\n', 'class A\n def keep; end\n attr(("r" + "un").to_sym)\nend\n'],

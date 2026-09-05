@@ -422,6 +422,8 @@ Runtime property-definition APIs (including `Object.defineProperty`, `Reflect`, 
 
 The same conservative rule applies to Ruby method installers/dynamic dispatch (such as `define_method`, `alias_method`, `send`, and class evaluation), Python attribute/class installers (such as `setattr`, `__dict__`, and `type`), and dynamic code evaluation. References to these APIs can establish uncertainty even through local aliases; ordinary source-confirmed Ruby/Python method deletions remain supported.
 
+Ruby `attr`/`attr_*` calls with plain symbol or string arguments record the exact reader/writer names they install. They only make those names unconfirmed; unrelated genuine deletions and ordinary no-argument `obj.attr` calls do not taint the file. Dynamic, interpolated, or escaped accessor arguments remain unresolved.
+
 Go receiver methods, Rust inherent impl methods, and C++ out-of-class definitions retain explicit type ownership and their own source ranges. Their duplicate entries in `classes[].methods` are reconciled without assuming the method body is inside the type declaration. Free functions with the same name stay distinct; unresolved receivers and Rust trait impl identities remain `unknown`. Receiver changes also affect structural fingerprints when the type declaration is in another file.
 
 When the report has `unresolvedFiles`, prepare exactly one repair:

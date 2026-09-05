@@ -18,9 +18,29 @@ const compare = (oldNodes, newNodes, oldSource, newSource) => compareFileSymbols
 );
 
 describe('incremental symbol matching', () => {
+  it.each(['attr :name', 'attr "name"', 'attr :"name"', 'attr :name, true', 'attr_reader :name',
+    'attr_writer :name', 'attr_accessor :name', 'obj.attr'])('allows unrelated Ruby deletion beside %s', accessor => {
+    const before = parser.analyzeFileStrict('a.rb', 'class A\n def run; end\nend');
+    const after = parser.analyzeFileStrict('a.rb', `class A\n def keep; end\n ${accessor}\nend`);
+    expect(after.hasUnresolvedNames).toBe(false);
+    expect(compareFileSymbols(graph([node('A.run')]), graph([]), before, after).missing[0].status).toBe('deleted');
+  });
+
+  it.each([
+    ['run', 'attr :run'], ['run=', 'attr :run, true'], ['run=', 'attr_writer :run'],
+    ['run', 'attr_accessor :run'], ['run=', 'attr_accessor :run'], ['run', 'attr_reader :run'],
+  ])('does not confirm deletion of Ruby %s still installed by %s', (name, accessor) => {
+    const before = parser.analyzeFileStrict('a.rb', `class A\n def ${name}${name.endsWith('=') ? '(value)' : ''}; end\nend`);
+    const after = parser.analyzeFileStrict('a.rb', `class A\n def keep; end\n ${accessor}\nend`);
+    expect(before.status).toBe('succeeded');
+    expect(after.hasUnresolvedNames).toBe(false);
+    expect(compareFileSymbols(graph([node(`A.${name}`)]), graph([]), before, after).missing[0].status).toBe('unknown');
+  });
+
   it.each([
     ['rb', 'class A\n def run; end\nend\n', 'class A\n def keep; end\n define_method(("r" + "un").to_sym) { 1 }\nend\n'],
     ['rb', 'class A\n def run; end\nend\n', 'class A\n def keep; end\n attr(("r" + "un").to_sym)\nend\n'],
+    ['rb', 'class A\n def run; end\nend\n', 'class A\n def keep; end\n install = method(:attr)\n install.call(("r" + "un").to_sym)\nend\n'],
     ['rb', 'class A\n def run; end\nend\n', 'class A\n def keep; end\n send(:define_method, ("r" + "un").to_sym) { 1 }\nend\n'],
     ['py', 'class A:\n def run(self): pass\n', 'class A:\n def keep(self): pass\nsetattr(A, "r" + "un", lambda self: None)\n'],
     ['py', 'class A:\n def run(self): pass\n', 'class A:\n def keep(self): pass\ninstall = setattr\ninstall(A, "r" + "un", lambda self: None)\n'],
