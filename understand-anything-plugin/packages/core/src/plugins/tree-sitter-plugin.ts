@@ -264,6 +264,52 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
   }
 
   /**
+   * Evidence for destructive structural comparisons. Unlike analyzeFile's
+   * best-effort contract, an unavailable grammar or a recovered syntax error
+   * must never look like a successfully parsed file with no symbols.
+   * Leaf text lets callers detect names in syntax the extractor does not yet
+   * understand, without introducing a second parser or regex extractor.
+   */
+  analyzeFileStrict(
+    filePath: string,
+    content: string,
+  ): {
+    status: "succeeded" | "unsupported" | "failed";
+    structure: StructuralAnalysis | null;
+    leafTexts: string[];
+  } {
+    let tree: ReturnType<TreeSitterParser["parse"]> = null;
+    try {
+      const parser = this.getParser(filePath);
+      const langKey = this.languageKeyFromPath(filePath);
+      const extractor = langKey ? this.getExtractor(langKey) : null;
+      if (!parser || !extractor) {
+        return { status: "unsupported", structure: null, leafTexts: [] };
+      }
+      tree = parser.parse(content);
+      if (!tree || tree.rootNode.hasError) {
+        return { status: "failed", structure: null, leafTexts: [] };
+      }
+      const leafTexts = new Set<string>();
+      const pending = [tree.rootNode];
+      while (pending.length > 0) {
+        const node = pending.pop()!;
+        if (node.childCount === 0) leafTexts.add(node.text);
+        else pending.push(...node.children);
+      }
+      return {
+        status: "succeeded",
+        structure: extractor.extractStructure(tree.rootNode),
+        leafTexts: [...leafTexts],
+      };
+    } catch {
+      return { status: "failed", structure: null, leafTexts: [] };
+    } finally {
+      tree?.delete();
+    }
+  }
+
+  /**
    * Parse the file ONCE and return both structural analysis and the call
    * graph. `extract-structure.mjs` runs `analyzeFile` then `extractCallGraph`
    * on every code file — two full tree-sitter parses of identical content.

@@ -360,6 +360,25 @@ export class Greeter {
     });
   });
 
+  describe("analyzeFileStrict", () => {
+    it("distinguishes unsupported syntax and parse errors from valid empty files", () => {
+      expect(plugin.analyzeFileStrict("test.xyz", "function f() {}").status).toBe("unsupported");
+      expect(plugin.analyzeFileStrict("test.ts", "class Broken {").status).toBe("failed");
+      const empty = plugin.analyzeFileStrict("test.ts", "// intentionally empty\n");
+      expect(empty.status).toBe("succeeded");
+      expect(empty.structure?.functions).toEqual([]);
+    });
+
+    it("uses the same extractor and preserves evidence of unextracted members", () => {
+      const code = "class A { run() {} callback = () => {}; }";
+      const strict = plugin.analyzeFileStrict("test.ts", code);
+      expect(strict.status).toBe("succeeded");
+      expect(strict.structure).toEqual(plugin.analyzeFile("test.ts", code));
+      expect(strict.structure?.classes[0].methods).toEqual(["run"]);
+      expect(strict.leafTexts).toContain("callback");
+    });
+  });
+
   describe("plugin metadata", () => {
     it("should have correct name", () => {
       expect(plugin.name).toBe("tree-sitter");
