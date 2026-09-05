@@ -17,8 +17,13 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { afterEach, describe, expect, it } from 'vitest';
-
 import * as benchmark from '../../scripts/lib/large-repo-benchmark.mjs';
+
+// Synchronous CLI probes can make this file exceed Vitest's RPC timeout on
+// Windows. Let the worker receive progress acknowledgements between cases.
+afterEach(async () => {
+  await new Promise(resolve => setImmediate(resolve));
+});
 
 const { CliUsageError, parseArgs } = benchmark;
 
