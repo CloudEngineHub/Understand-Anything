@@ -1026,7 +1026,9 @@ describe('Git metadata probes', () => {
 
   afterEach(() => {
     for (const path of cleanup.splice(0)) {
-      rmSync(path, { recursive: true, force: true });
+      // Git-for-Windows can briefly retain its cwd after ENOBUFS termination.
+      // Retry cleanup rather than failing an otherwise successful bounded probe.
+      rmSync(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 
