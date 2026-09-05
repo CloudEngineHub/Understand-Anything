@@ -304,9 +304,26 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
       );
       const isJavaScriptExtractor = extractor.languageIds.some(id => id === "typescript" || id === "javascript");
       const propertyDefinitionNames = new Set(["defineProperty", "defineProperties", "__defineGetter__", "__defineSetter__"]);
+      const runtimeInstallers = new Set<string>();
+      if (isJavaScriptExtractor) {
+        for (const name of ["eval", "Function"]) runtimeInstallers.add(name);
+      }
+      if (extractor.languageIds.includes("ruby")) {
+        for (const name of ["define_method", "define_singleton_method", "alias_method", "attr_accessor", "attr_reader",
+          "attr_writer", "class_eval", "module_eval", "instance_eval", "class_exec", "module_exec", "instance_exec",
+          "eval", "send", "public_send", "__send__"]) runtimeInstallers.add(name);
+      }
+      if (extractor.languageIds.includes("python")) {
+        for (const name of ["setattr", "__setattr__", "__dict__", "exec", "eval", "type", "new_class"]) {
+          runtimeInstallers.add(name);
+        }
+      }
       const pending = [tree.rootNode];
       while (pending.length > 0) {
         const node = pending.pop()!;
+        // Name references also cover local aliases and dynamic dispatch. These
+        // languages can install methods without any structural declaration.
+        if (node.childCount === 0 && runtimeInstallers.has(node.text)) hasUnresolvedNames = true;
         if (isJavaScriptExtractor) {
           // Runtime property installers are not structural declarations. Mark
           // references as well as calls so local aliases/destructuring cannot

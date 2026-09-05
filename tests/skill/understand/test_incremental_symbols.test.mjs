@@ -18,6 +18,25 @@ const compare = (oldNodes, newNodes, oldSource, newSource) => compareFileSymbols
 );
 
 describe('incremental symbol matching', () => {
+  it.each([
+    ['rb', 'class A\n def run; end\nend\n', 'class A\n def keep; end\n define_method(("r" + "un").to_sym) { 1 }\nend\n'],
+    ['rb', 'class A\n def run; end\nend\n', 'class A\n def keep; end\n send(:define_method, ("r" + "un").to_sym) { 1 }\nend\n'],
+    ['py', 'class A:\n def run(self): pass\n', 'class A:\n def keep(self): pass\nsetattr(A, "r" + "un", lambda self: None)\n'],
+    ['py', 'class A:\n def run(self): pass\n', 'class A:\n def keep(self): pass\ninstall = setattr\ninstall(A, "r" + "un", lambda self: None)\n'],
+  ])('keeps runtime-installed %s methods unresolved', (extension, oldSource, newSource) => {
+    const filePath = `src/a.${extension}`;
+    const before = parser.analyzeFileStrict(filePath, oldSource);
+    const after = parser.analyzeFileStrict(filePath, newSource);
+    expect(before.status).toBe('succeeded');
+    expect(after.status).toBe('succeeded');
+    expect(after.hasUnresolvedNames).toBe(true);
+    const previous = graph([node('A.run', { filePath, id: `function:${filePath}:A.run` })]);
+    expect(compareFileSymbols(previous, graph([]), before, after).missing[0].status).toBe('unknown');
+    const ordinary = parser.analyzeFileStrict(filePath, extension === 'rb'
+      ? 'class A\n def keep; end\nend\n' : 'class A:\n def keep(self): pass\n');
+    expect(compareFileSymbols(previous, graph([]), before, ordinary).missing[0].status).toBe('deleted');
+  });
+
   it.each(['ts', 'tsx', 'js', 'jsx', 'mts', 'cts', 'mjs', 'cjs'])('rejects computed assignment deletion evidence in .%s', extension => {
     const filePath = `src/a.${extension}`;
     const before = parser.analyzeFileStrict(filePath, 'class A { run() {} }');

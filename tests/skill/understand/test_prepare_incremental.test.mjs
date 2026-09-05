@@ -232,6 +232,27 @@ afterEach(async () => {
 });
 
 describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
+  it.each([
+    ['rb', 'class A\n def run; end\nend\n', 'class A\n def keep; end\n define_method(("r" + "un").to_sym) { 1 }\nend\n'],
+    ['py', 'class A:\n def run(self): pass\n', 'class A:\n def keep(self): pass\nsetattr(A, "r" + "un", lambda self: None)\n'],
+  ])('blocks publication of omitted runtime-installed %s methods', (extension, oldSource, newSource) => {
+    const path = `src/dynamic.${extension}`;
+    const f = symbolFixture(2, { [path]: oldSource });
+    const previous = JSON.parse(f.persisted()[0]);
+    const method = { ...f.methodNodes[0], id: `function:${path}:A.run`, name: 'A.run', filePath: path };
+    previous.nodes.push(method);
+    writeFileSync(join(f.dataDir, 'knowledge-graph.json'), JSON.stringify(previous));
+    writeProjectFile(f.root, path, newSource);
+    commit(f.root, 'install method dynamically');
+    const before = f.persisted();
+    expect(prepare(f.root, f.baseCommit).plan.filesToReanalyze).toContain(path);
+    f.write('batch-1.json', { nodes: [previous.nodes.find(node => node.id === `file:${path}`)], edges: [] });
+    expect(spawnSync(python, [mergeScript, f.root]).status).toBe(1);
+    expect(f.read('incremental-symbol-report.json').files.find(file => file.filePath === path).missing[0].status).toBe('unknown');
+    expect(spawnSync(process.execPath, [finalizeScript, f.root]).status).toBe(1);
+    expect(f.persisted()).toEqual(before);
+  });
+
   it('reanalyzes changed Rust trait identities and blocks publication with unresolved receivers', () => {
     const path = 'src/method.rs';
     const f = symbolFixture(2, { [path]: 'impl TraitA for A { fn run(&self) {} }\n' });

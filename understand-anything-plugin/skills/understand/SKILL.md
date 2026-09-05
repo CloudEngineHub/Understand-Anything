@@ -420,6 +420,8 @@ A syntactically valid parse is insufficient to prove deletion when declaration n
 
 Runtime property-definition APIs (including `Object.defineProperty`, `Reflect`, and locally aliased property installers) and computed callees also make absence unconfirmed. The structural extractor does not evaluate runtime property creation; such evidence blocks automatic deletion confirmation even when the remaining declarations parse successfully.
 
+The same conservative rule applies to Ruby method installers/dynamic dispatch (such as `define_method`, `alias_method`, `send`, and class evaluation), Python attribute/class installers (such as `setattr`, `__dict__`, and `type`), and dynamic code evaluation. References to these APIs can establish uncertainty even through local aliases; ordinary source-confirmed Ruby/Python method deletions remain supported.
+
 Go receiver methods, Rust inherent impl methods, and C++ out-of-class definitions retain explicit type ownership and their own source ranges. Their duplicate entries in `classes[].methods` are reconciled without assuming the method body is inside the type declaration. Free functions with the same name stay distinct; unresolved receivers and Rust trait impl identities remain `unknown`. Receiver changes also affect structural fingerprints when the type declaration is in another file.
 
 When the report has `unresolvedFiles`, prepare exactly one repair:
