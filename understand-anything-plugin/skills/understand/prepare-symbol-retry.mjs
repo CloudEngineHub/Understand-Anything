@@ -69,8 +69,18 @@ async function main() {
     batch.missingSymbols = report.files.filter(file => files.has(file.filePath));
   }
   const assembled = readJson(join(intermediateDir, 'assembled-graph.json'));
+  const candidates = readJson(join(intermediateDir, 'incremental-edge-candidates.json'));
+  if (candidates.baseCommit !== plan.baseCommit || candidates.headCommit !== plan.headCommit
+    || !Array.isArray(candidates.edges)) throw new Error('Current edge candidates do not match the incremental plan; rerun merge');
   const removedIds = new Set(assembled.nodes.filter(node => paths.has(normalizePath(node.filePath)))
     .map(node => node.id));
+  const retainedIds = new Set(assembled.nodes.filter(node => !removedIds.has(node.id)).map(node => node.id));
+  const previousIds = new Set(baseline.files.filter(file => paths.has(file.filePath))
+    .flatMap(file => file.nodes.map(node => node.id)));
+  const targetsAffectedFile = id => removedIds.has(id) || previousIds.has(id)
+    || (typeof id === 'string' && [...paths].some(path => id.includes(`:${path}:`)));
+  const inboundEdgeCandidates = [...assembled.edges, ...candidates.edges].filter(edge =>
+    retainedIds.has(edge.source) && targetsAffectedFile(edge.target));
   const retained = {
     nodes: assembled.nodes.filter(node => !removedIds.has(node.id)),
     // Other files are not reanalyzed. Preserve their current inbound edge
@@ -86,7 +96,7 @@ async function main() {
   atomicWriteJson(retryPath, {
     version: 1, baseCommit: plan.baseCommit, headCommit: plan.headCommit, attempt: 1,
     filesToReanalyze: [...paths], batches,
-    inboundEdgeCandidates: assembled.edges.filter(edge => !removedIds.has(edge.source) && removedIds.has(edge.target)),
+    inboundEdgeCandidates,
     replacedFiles: [...paths].map(filePath => {
       const nodes = assembled.nodes.filter(node => normalizePath(node.filePath) === filePath);
       const ids = new Set(nodes.map(node => node.id));

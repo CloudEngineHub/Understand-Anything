@@ -254,7 +254,10 @@ export async function validateIncrementalSymbols(projectRoot, { graph, intermedi
       if (retry?.baseCommit === plan.baseCommit && retry.headCommit === plan.headCommit
         && Array.isArray(retry.inboundEdgeCandidates) && Array.isArray(retry.replacedFiles)) {
         const ids = new Set(graph.nodes.map(node => node.id));
-        const remap = new Map();
+        // A target omitted in the initial merge has no current node descriptor;
+        // use its independently verified baseline-to-current identity mapping.
+        const remap = new Map(report.files.flatMap(file => file.replacements)
+          .map(({ oldId, newId }) => [oldId, newId]));
         // These descriptors belong to the initial CURRENT analysis, not the
         // old published graph. Both sides therefore map against HEAD source.
         for (const previous of retry.replacedFiles) {
@@ -263,8 +266,8 @@ export async function validateIncrementalSymbols(projectRoot, { graph, intermedi
           const result = compareFileSymbols(previous, fileGraph(previous.filePath), evidence, evidence);
           for (const replacement of result.replacements) remap.set(replacement.oldId, replacement.newId);
         }
-        const edgeKey = edge => JSON.stringify([edge.source, edge.target, edge.type]);
-        const existing = new Set(graph.edges.map(edgeKey));
+        const edgeKey = edge => JSON.stringify([edge.source, edge.target, edge.type, edge.direction]);
+        const existing = new Map(graph.edges.map((edge, index) => [edgeKey(edge), index]));
         report.reconciledRetryEdges = 0;
         report.droppedRetryEdges = [];
         report.retryIdReplacements = [...remap].map(([oldId, newId]) => ({ oldId, newId }));
@@ -272,10 +275,16 @@ export async function validateIncrementalSymbols(projectRoot, { graph, intermedi
           const edge = { ...candidate, target: remap.get(candidate.target) ?? candidate.target };
           if (!ids.has(edge.source) || !ids.has(edge.target)) {
             report.droppedRetryEdges.push({ source: candidate.source, target: candidate.target, type: candidate.type });
-          } else if (!existing.has(edgeKey(edge))) {
-            graph.edges.push(edge);
-            existing.add(edgeKey(edge));
-            report.reconciledRetryEdges++;
+          } else {
+            const index = existing.get(edgeKey(edge));
+            if (index === undefined) {
+              existing.set(edgeKey(edge), graph.edges.length);
+              graph.edges.push(edge);
+              report.reconciledRetryEdges++;
+            } else if (Number(edge.weight) > Number(graph.edges[index].weight)) {
+              graph.edges[index] = edge;
+              report.reconciledRetryEdges++;
+            }
           }
         }
         // Merge's earlier dangling-edge cleanup cannot see semantic ID aliases.

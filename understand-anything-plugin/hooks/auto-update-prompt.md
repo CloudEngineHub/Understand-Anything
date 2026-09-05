@@ -65,6 +65,8 @@ It combines `batch-existing.json` with fresh batches and recovers imports from t
 
 Merge runs `validate-incremental-symbols.mjs`, comparing the preserved old symbols with the candidate and base/current source. Read `incremental-symbol-report.json` for per-file counts, missing IDs/names, and still-present/deleted/unknown classifications. A same-size node set can still have missing symbols. Confirmed deletions are allowed; still-present or unknown omissions block publication.
 
+Merge also preserves normalized dangling inbound candidates from fresh batches in `incremental-edge-candidates.json` before discarding their missing targets. Retry can reconcile these after the omitted symbols return, including changed ID spellings. This evidence excludes `batch-existing.json` and is cleared by fresh preparation.
+
 If the report has `unresolvedFiles`, prepare one targeted symbol retry:
 
 ```bash

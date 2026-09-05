@@ -285,9 +285,15 @@ describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
       { source: otherFile.id, target: otherFunction.id, type: 'contains', direction: 'forward', weight: 1 },
       { source: otherFunction.id, target: obsolete.id, type: 'calls', direction: 'forward', weight: 1 },
       { source: otherFunction.id, target: initialMethod.id, type: 'calls', direction: 'forward', weight: 0.8 },
+      { source: otherFunction.id, target: f.methodNodes[1].id, type: 'calls', direction: 'forward', weight: 0.6 },
+      { source: otherFunction.id, target: f.methodNodes[1].id, type: 'calls', direction: 'forward', weight: 0.9 },
       { source: initialMethod.id, target: otherFunction.id, type: 'calls', direction: 'forward', weight: 0.5 },
     ] });
     expect(spawnSync(python, [mergeScript, f.root]).status).toBe(1);
+    expect(f.read('assembled-graph.json').edges.some(edge => edge.target === f.methodNodes[1].id)).toBe(false);
+    expect(f.read('incremental-edge-candidates.json').edges).toContainEqual(expect.objectContaining({
+      source: otherFunction.id, target: f.methodNodes[1].id, weight: 0.9,
+    }));
     run(process.execPath, [retryScript, f.root], f.root);
     const retry = f.read('incremental-symbol-retry.json');
     expect(retry.filesToReanalyze).toEqual(['src/a.ts']);
@@ -318,6 +324,7 @@ describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
       expect(graph.nodes.some(node => node.id === obsolete.id)).toBe(false);
       expect(graph.edges.some(edge => edge.target === obsolete.id)).toBe(false);
       expect(graph.edges.find(edge => edge.source === otherFunction.id && edge.target === repairedMethods[0].id)?.weight).toBe(0.8);
+      expect(graph.edges.find(edge => edge.source === otherFunction.id && edge.target === repairedMethods[1].id)?.weight).toBe(0.9);
       if (outcome === 'renamed-ids') {
         expect(f.read('incremental-symbol-report.json').retryIdReplacements).toContainEqual({
           oldId: initialMethod.id, newId: repairedMethods[0].id,
@@ -341,6 +348,7 @@ describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
       prepare(f.root, f.baseCommit);
       expect(f.read('incremental-symbol-retry.json').attempt).toBe(1);
       expect(f.read('incremental-symbol-retry.json')).not.toHaveProperty('inboundEdgeCandidates');
+      expect(() => f.read('incremental-edge-candidates.json')).toThrow();
       expect(spawnSync(process.execPath, [retryScript, f.root]).status).toBe(1);
       expect(f.persisted()).toEqual(before);
     }

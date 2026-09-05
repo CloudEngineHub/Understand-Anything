@@ -412,6 +412,8 @@ The merge combines `batch-existing.json` with any fresh batch output. Its import
 
 **Symbol-loss gate and one targeted retry:** Merge invokes `validate-incremental-symbols.mjs`. Read `incremental-symbol-report.json`: it reports per-file before/after counts and missing node IDs/names even when counts stay equal. Missing functions, classes, and methods (including `classes[].methods`) are classified against base/current source with the same strict parser. Only confirmed source deletions are allowed; still-present and unknown symbols block publication.
 
+Before dropping dangling targets, merge records normalized inbound candidates from fresh batches in `incremental-edge-candidates.json`, bound to the base/head commits. Retry uses these alongside surviving current edges, so an edge to the initially omitted symbol can be restored after repair, including accepted ID spelling changes. Edges from `batch-existing.json` are not collected as fresh evidence.
+
 When the report has `unresolvedFiles`, prepare exactly one repair:
 
 ```bash

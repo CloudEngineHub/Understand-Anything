@@ -1445,5 +1445,27 @@ class TestUaDirResolution(unittest.TestCase):
         self.assertFalse((self.tmp / ".ua" / "intermediate" / "assembled-graph.json").exists())
 
 
+class TestIncrementalEdgeCandidates(unittest.TestCase):
+    def test_preserves_only_current_normalized_dangling_targets(self) -> None:
+        source = _file_node("src/b.ts", id="demo:file:src/b.ts")
+        old_edge = {"source": source["id"], "target": "function:src/a.ts:old", "type": "calls"}
+        fresh_edges = [
+            {"source": source["id"], "target": "function:src/a.ts:lost", "type": "calls", "direction": "both", "weight": 0.6},
+            {"source": source["id"], "target": "function:src/a.ts:lost", "type": "calls", "direction": "both", "weight": 0.9},
+            {"source": "missing", "target": "function:src/a.ts:lost", "type": "calls"},
+        ]
+        candidates: list[dict[str, Any]] = []
+        assembled, _report = mbg.merge_and_normalize(
+            [{"nodes": [source], "edges": [old_edge]}, {"nodes": [], "edges": fresh_edges}],
+            current_edge_ids={id(edge) for edge in fresh_edges},
+            dangling_candidates=candidates,
+        )
+        self.assertEqual(assembled["edges"], [])
+        self.assertEqual(candidates, [{
+            "source": "file:src/b.ts", "target": "function:src/a.ts:lost", "type": "calls",
+            "direction": "bidirectional", "weight": 0.9,
+        }])
+
+
 if __name__ == "__main__":
     unittest.main()

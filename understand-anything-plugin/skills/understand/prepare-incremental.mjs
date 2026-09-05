@@ -124,6 +124,7 @@ function clearIncrementalScratch(intermediateDir) {
     'layers.json',
     'tour.json',
     'incremental-symbol-report.json',
+    'incremental-edge-candidates.json',
   ]);
   for (const name of readdirSync(intermediateDir)) {
     if (exactNames.has(name) || /^batch-\d+(?:-part-\d+)?\.json$/.test(name)) {
