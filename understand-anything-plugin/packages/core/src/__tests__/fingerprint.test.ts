@@ -5,6 +5,7 @@ import {
   extractFileFingerprint,
   compareFingerprints,
   analyzeChanges,
+  buildFingerprintStore,
   type FileFingerprint,
   type FingerprintStore,
 } from "../fingerprint.js";
@@ -22,6 +23,34 @@ const mockedExistsSync = vi.mocked(existsSync);
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+describe("buildFingerprintStore", () => {
+  it("uses content-only fingerprints when parser structure is not fully represented", () => {
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockReturnValue('{"enabled":true}');
+    const registry = {
+      analyzeFile: vi.fn().mockReturnValue({
+        functions: [],
+        classes: [],
+        imports: [],
+        exports: [],
+        definitions: [{ name: "enabled", kind: "property" }],
+      }),
+      getLanguageForFile: vi.fn().mockReturnValue("json"),
+    } as any;
+
+    const store = buildFingerprintStore(
+      "/project",
+      ["config.json"],
+      registry,
+      "abc123",
+      { structuralFingerprintLanguages: new Set(["typescript"]) },
+    );
+
+    expect(store.files["config.json"].hasStructuralAnalysis).toBe(false);
+    expect(store.files["config.json"].contentHash).toBe(contentHash('{"enabled":true}'));
+  });
 });
 
 describe("contentHash", () => {

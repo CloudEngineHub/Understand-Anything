@@ -60,6 +60,38 @@ def _file_node(path: str, **extra: Any) -> dict[str, Any]:
     return node
 
 
+def _whole_file_node(node_type: str, path: str) -> dict[str, Any]:
+    return _file_node(path, id=f"{node_type}:{path}", type=node_type)
+
+
+class WholeFileImportIndexTests(unittest.TestCase):
+    """Import recovery resolves every valid whole-file node type by path."""
+
+    def test_indexes_supported_whole_file_types(self) -> None:
+        nodes = [
+            _whole_file_node(node_type, f"project/{node_type}.txt")
+            for node_type in sorted(mbg.WHOLE_FILE_NODE_TYPES)
+        ]
+        index, warnings = mbg.build_whole_file_node_index(nodes)
+        self.assertEqual(warnings, [])
+        for node_type in mbg.WHOLE_FILE_NODE_TYPES:
+            path = f"project/{node_type}.txt"
+            self.assertEqual(index[path], f"{node_type}:{path}")
+
+    def test_prefers_file_and_rejects_child_or_malformed_nodes(self) -> None:
+        path = "config/app.json"
+        nodes = [
+            _whole_file_node("config", path),
+            _whole_file_node("file", path),
+            _file_node(path, id=f"table:{path}:users", type="table"),
+            _file_node("bad.json", id="config:not-bad.json", type="config"),
+        ]
+        index, warnings = mbg.build_whole_file_node_index(nodes)
+        self.assertEqual(index, {path: f"file:{path}"})
+        self.assertEqual(len(warnings), 1)
+        self.assertIn(f"selected file:{path}", warnings[0])
+
+
 # ── is_test_path ──────────────────────────────────────────────────────────
 
 class IsTestPathTests(unittest.TestCase):

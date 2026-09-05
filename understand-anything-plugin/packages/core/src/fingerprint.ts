@@ -45,6 +45,15 @@ export interface FingerprintStore {
   files: Record<string, FileFingerprint>;
 }
 
+export interface FingerprintBuildOptions {
+  /**
+   * Languages whose StructuralAnalysis fields are fully represented by
+   * FileFingerprint. Other languages receive content-only fingerprints so a
+   * content change is classified conservatively instead of as cosmetic.
+   */
+  structuralFingerprintLanguages?: ReadonlySet<string>;
+}
+
 export type ChangeLevel = "NONE" | "COSMETIC" | "STRUCTURAL";
 
 export interface FileChangeResult {
@@ -255,6 +264,7 @@ export function buildFingerprintStore(
   filePaths: string[],
   registry: PluginRegistry,
   gitCommitHash: string,
+  options: FingerprintBuildOptions = {},
 ): FingerprintStore {
   const files: Record<string, FileFingerprint> = {};
 
@@ -264,8 +274,14 @@ export function buildFingerprintStore(
 
     const content = readFileSync(absolutePath, "utf-8");
     const analysis = registry.analyzeFile(filePath, content);
+    let fingerprintCoversAnalysis = true;
+    if (options.structuralFingerprintLanguages !== undefined) {
+      const language = registry.getLanguageForFile(filePath);
+      fingerprintCoversAnalysis =
+        language !== null && options.structuralFingerprintLanguages.has(language);
+    }
 
-    if (analysis) {
+    if (analysis && fingerprintCoversAnalysis) {
       files[filePath] = extractFileFingerprint(filePath, content, analysis);
     } else {
       // No tree-sitter support: content hash only (conservative)

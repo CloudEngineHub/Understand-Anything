@@ -970,6 +970,56 @@ def merge_and_normalize(batches: list[dict[str, Any]]) -> tuple[dict[str, Any], 
 
 # ── Imports-edge recovery from importMap ──────────────────────────────────
 
+WHOLE_FILE_NODE_TYPES: frozenset[str] = frozenset(
+    {"file", "config", "document", "service", "pipeline", "schema", "resource"}
+)
+
+
+def build_whole_file_node_index(
+    nodes: list[dict[str, Any]],
+) -> tuple[dict[str, str], list[str]]:
+    """Map each filePath to its canonical whole-file node id.
+
+    Only exact ``<type>:<filePath>`` IDs qualify. This intentionally excludes
+    child constructs such as tables and endpoints, even when they carry the
+    same ``filePath``. If an analyzer emitted more than one whole-file node for
+    a path, ``file:`` wins; otherwise the first stable graph occurrence wins.
+    """
+    index: dict[str, str] = {}
+    selected_types: dict[str, str] = {}
+    warnings: list[str] = []
+
+    for node in nodes:
+        node_type = node.get("type")
+        file_path = node.get("filePath")
+        node_id = node.get("id")
+        if (
+            node_type not in WHOLE_FILE_NODE_TYPES
+            or not isinstance(file_path, str)
+            or not file_path
+            or node_id != f"{node_type}:{file_path}"
+        ):
+            continue
+
+        existing_id = index.get(file_path)
+        if existing_id is None:
+            index[file_path] = node_id
+            selected_types[file_path] = node_type
+            continue
+
+        existing_type = selected_types[file_path]
+        if node_type == "file" and existing_type != "file":
+            index[file_path] = node_id
+            selected_types[file_path] = node_type
+            selected = node_id
+        else:
+            selected = existing_id
+        warnings.append(
+            f"  Warning: multiple whole-file nodes for {file_path}; selected {selected}"
+        )
+
+    return index, warnings
+
 def recover_imports_from_scan(
     assembled: dict[str, Any],
     scan_result_path: Path,
@@ -995,11 +1045,9 @@ def recover_imports_from_scan(
     if not isinstance(import_map, dict):
         return 0, [f"  importMap recovery skipped — no importMap field in {scan_result_path.name}"]
 
-    # Build the set of file: node ids actually present in the assembled graph.
-    file_node_ids: set[str] = set()
-    for node in assembled["nodes"]:
-        if node.get("type") == "file":
-            file_node_ids.add(node.get("id", ""))
+    file_path_to_node_id, conflict_warnings = build_whole_file_node_index(
+        assembled["nodes"]
+    )
 
     # Build the set of (source, target) imports edges already present.
     existing: set[tuple[str, str]] = set()
@@ -1013,16 +1061,16 @@ def recover_imports_from_scan(
     for src_path, targets in import_map.items():
         if not isinstance(targets, list):
             continue
-        src_id = f"file:{src_path}"
-        if src_id not in file_node_ids:
+        src_id = file_path_to_node_id.get(src_path)
+        if src_id is None:
             if targets:
                 skipped_no_src_node += 1
             continue
         for tgt_path in targets:
             if not isinstance(tgt_path, str) or not tgt_path:
                 continue
-            tgt_id = f"file:{tgt_path}"
-            if tgt_id not in file_node_ids:
+            tgt_id = file_path_to_node_id.get(tgt_path)
+            if tgt_id is None:
                 skipped_no_tgt_node += 1
                 continue
             if src_id == tgt_id:
@@ -1040,7 +1088,7 @@ def recover_imports_from_scan(
             existing.add((src_id, tgt_id))
             recovered += 1
 
-    lines: list[str] = []
+    lines: list[str] = list(conflict_warnings)
     lines.append(
         f"  Recovered {recovered} `imports` edges from importMap "
         f"({len(import_map)} entries scanned)"
@@ -1048,12 +1096,12 @@ def recover_imports_from_scan(
     if skipped_no_src_node:
         lines.append(
             f"  Skipped {skipped_no_src_node} importMap source files "
-            f"with no `file:` node in graph"
+            f"with no whole-file node in graph"
         )
     if skipped_no_tgt_node:
         lines.append(
             f"  Skipped {skipped_no_tgt_node} importMap target paths "
-            f"with no `file:` node in graph"
+            f"with no whole-file node in graph"
         )
     return recovered, lines
 
