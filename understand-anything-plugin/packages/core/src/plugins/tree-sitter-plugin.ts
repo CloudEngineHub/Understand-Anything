@@ -314,6 +314,23 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
           || (methodName?.type === "string" && methodName.text.includes("\\"))) {
           hasUnresolvedNames = true;
         }
+        if (!hasUnresolvedNames && ["typescript", "javascript"].includes(langKey!)
+          && ["assignment_expression", "augmented_assignment_expression"].includes(node.type)) {
+          // Methods can also be installed through prototype/object writes.
+          // Inspect the entire target for destructuring and wrapped accesses;
+          // computed reads alone are not declaration evidence.
+          const target = node.childForFieldName("left");
+          const targets = target ? [target] : [];
+          while (targets.length > 0) {
+            const part = targets.pop()!;
+            if (part.type === "subscript_expression"
+              || (part.type === "property_identifier" && part.text.includes("\\"))) {
+              hasUnresolvedNames = true;
+              break;
+            }
+            targets.push(...part.namedChildren);
+          }
+        }
         if (node.childCount === 0) leafTexts.add(node.text);
         else pending.push(...node.children);
       }

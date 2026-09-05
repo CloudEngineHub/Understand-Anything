@@ -384,12 +384,18 @@ export class Greeter {
         'class A { ["r" + "un"]() {} keep() {} }',
         String.raw`class A { r\u0075n() {} keep() {} }`,
         String.raw`class A { "r\u0075n"() {} keep() {} }`,
+        'class A { keep() {} }; A.prototype["r" + "un"] = function() {};',
+        'class A { keep() {} }; A.prototype[key] ||= function() {};',
+        'class A { keep() {} }; ({method: A.prototype[key]} = obj);',
+        String.raw`class A { keep() {} }; A.prototype.r\u0075n = function() {};`,
       ]) {
         const result = plugin.analyzeFileStrict("test.js", code);
         expect(result.status).toBe("succeeded");
         expect(result.hasUnresolvedNames).toBe(true);
       }
       expect(plugin.analyzeFileStrict("test.js", String.raw`function keep(r\u0075n) { return r\u0075n; }`)
+        .hasUnresolvedNames).toBe(false);
+      expect(plugin.analyzeFileStrict("test.js", 'class A { keep() { return this["x" + "y"]; } }')
         .hasUnresolvedNames).toBe(false);
     });
   });

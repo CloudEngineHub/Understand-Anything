@@ -142,6 +142,8 @@ describe('incremental symbol matching', () => {
     ['unextracted arrow method', 'class A { run = () => {}; }'],
     ['computed method', 'class A { ["run"]() {} }'],
     ['computed name fragments', 'class A { ["r" + "un"]() {} keep() {} }'],
+    ['computed method assignment', 'class A { keep() {} }; A.prototype["r" + "un"] = function() {};'],
+    ['escaped method assignment', String.raw`class A { keep() {} }; A.prototype.r\u0075n = function() {};`],
     ['escaped identifier', String.raw`class A { r\u0075n() {} keep() {} }`],
     ['escaped string method name', String.raw`class A { "r\u0075n"() {} keep() {} }`],
     ['moved method', 'class B { run() {} }'],

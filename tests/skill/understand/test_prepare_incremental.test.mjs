@@ -251,10 +251,13 @@ describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
     expect(f.persisted()).toEqual(before);
   });
 
-  it('does not publish a missing method whose computed source name still denotes the old symbol', () => {
+  it.each([
+    ['declaration', 'export class Service { ["method" + "0"]() { return 1; } method1() {} }\n'],
+    ['assignment', 'export class Service { method1() {} }; Service.prototype["method" + "0"] = function() {};\n'],
+  ])('does not publish a missing method whose computed %s still denotes the old symbol', (_label, source) => {
     const f = symbolFixture(2);
-    const source = 'export class Service { ["method" + "0"]() { return 1; } method1() {} }\n';
-    expect(Object.hasOwn(class { ['method' + '0']() {} }.prototype, 'method0')).toBe(true);
+    const result = new Function(source.replace('export ', '') + '\nreturn Service;')();
+    expect(Object.hasOwn(result.prototype, 'method0')).toBe(true);
     writeProjectFile(f.root, 'src/a.ts', source);
     commit(f.root, 'use a computed method name');
     const before = f.persisted();
