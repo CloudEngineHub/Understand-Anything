@@ -375,8 +375,7 @@ export class Greeter {
       expect(strict.status).toBe("succeeded");
       expect(strict.structure).toEqual(plugin.analyzeFile("test.ts", code));
       expect(strict.structure?.classes[0].methods).toEqual(["run"]);
-      expect(strict.leafTexts).toContain("callback");
-      expect(strict.hasUnresolvedNames).toBe(false);
+      expect(strict.symbolEvidence?.possible).toContainEqual(expect.objectContaining({ owner: "A", name: "callback" }));
     });
 
     it.each(["test.js", "test.jsx", "test.ts", "test.tsx"])("exposes unresolved computed and escaped names in %s", (filePath) => {
@@ -398,12 +397,12 @@ export class Greeter {
       ]) {
         const result = plugin.analyzeFileStrict(filePath, code);
         expect(result.status).toBe("succeeded");
-        expect(result.hasUnresolvedNames).toBe(true);
+        expect(result.symbolEvidence?.possible.length).toBeGreaterThan(0);
       }
       expect(plugin.analyzeFileStrict(filePath, String.raw`function keep(r\u0075n) { return r\u0075n; }`)
-        .hasUnresolvedNames).toBe(false);
+        .symbolEvidence?.possible).toEqual([]);
       expect(plugin.analyzeFileStrict(filePath, 'class A { keep() { return this["x" + "y"]; } }')
-        .hasUnresolvedNames).toBe(false);
+        .symbolEvidence?.possible).toEqual([]);
     });
   });
 
