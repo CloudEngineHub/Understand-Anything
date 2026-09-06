@@ -25,6 +25,10 @@ export function identifier(node: Node | null | undefined): string | null {
 export function declarationName(node: Node | null | undefined): string | null {
   return identifier(node) ?? literal(node);
 }
+export function declarationKey(node: Node): Node | null {
+  return node.childForFieldName("name")
+    ?? (node.type === "field_definition" ? node.childForFieldName("property") : null);
+}
 export function unwrap(node: Node | null): Node | null {
   while (node && ["parenthesized_expression", "parenthesized_statements"].includes(node.type)
     && node.namedChildren.length === 1) node = node.namedChildren[0];

@@ -12,10 +12,10 @@ export const UNKNOWN_SCOPE: SymbolScope = { kind: "unknown" };
 export function namedScope(name: string | null): SymbolScope {
   return name === null ? UNKNOWN_SCOPE : name === "" ? FILE_SCOPE : { kind: "class", name };
 }
-export const CLASS_NODES = new Set(["class", "module", "class_declaration", "class_definition", "class_specifier",
+export const CLASS_NODES = new Set(["class", "module", "class_declaration", "abstract_class_declaration", "class_definition", "class_specifier",
   "struct_specifier", "struct_declaration", "struct_item", "enum_item", "interface_declaration"]);
 export const FUNCTION_NODES = new Set(["method", "singleton_method", "method_definition", "function_definition",
-  "function_declaration", "function_item", "method_declaration", "constructor_declaration", "arrow_function", "function_expression", "lambda"]);
+  "function_declaration", "generator_function_declaration", "generator_function", "function_item", "method_declaration", "constructor_declaration", "arrow_function", "function_expression", "lambda"]);
 const METHODS = new Set(["method", "singleton_method", "method_definition", "method_declaration", "constructor_declaration"]);
 type Target = () => SymbolScope;
 const fixed = (value: SymbolScope): Target => () => value;
@@ -106,18 +106,36 @@ export function buildSymbolScopes(root: Node, language: string) {
     } else if (node.type === "singleton_class") {
       scope = makeScope(node, enclosing, "class", unknownTarget, false);
     } else if (isFunction) {
-      const declaresBinding = !METHODS.has(node.type) && !["function_expression", "arrow_function", "lambda"].includes(node.type);
+      const declaresBinding = !METHODS.has(node.type) && !["function_expression", "generator_function", "arrow_function", "lambda"].includes(node.type);
       if (declaresBinding && nameNode) bind(enclosing, name, node, unknownTarget);
       const receiver = isJS && !METHODS.has(node.type) && node.type !== "arrow_function" ? unknownTarget : enclosing.receiver;
       scope = makeScope(node, enclosing, "function", receiver, true);
-      if (node.type === "function_expression" && nameNode) bind(scope, name, node, unknownTarget);
+      if (["function_expression", "generator_function"].includes(node.type) && nameNode) bind(scope, name, node, unknownTarget);
       for (const parameter of targets(node.childForFieldName("parameters"))) bind(scope, parameter, node, unknownTarget);
-    } else if (isJS && ["statement_block", "class_static_block"].includes(node.type)) {
+    } else if (isJS && ["statement_block", "class_static_block", "for_statement", "for_in_statement", "catch_clause", "switch_statement", "with_statement"].includes(node.type)) {
       scope = makeScope(node, enclosing, "block", enclosing.receiver, true);
     } else if (["namespace_definition", "namespace_declaration"].includes(node.type)) {
       scope = makeScope(node, enclosing, "namespace", unknownTarget, false);
     }
     facts.set(node.id, { scope, declaration, receiver: enclosing.receiver, classTarget });
+    if (isJS && node.type === "with_statement") scope.unknownBindings = true;
+    if (isJS && node.type === "catch_clause") {
+      for (const parameter of targets(node.childForFieldName("parameter"))) bind(scope, parameter, node, unknownTarget);
+    }
+    if (node.type === "for_in_statement" || language === "python" && node.type === "for_statement") {
+      for (const target of targets(node.childForFieldName("left"))) {
+        const declared = node.childForFieldName("kind");
+        const found = target && lookup(enclosing, target);
+        const destination = !isJS ? scope : declared?.text === "var" ? enclosing
+          : declared ? scope : found ? found.scope : global;
+        bind(destination, target, node, unknownTarget);
+      }
+    }
+    if (language === "python" && node.type === "as_pattern") {
+      const alias = node.childForFieldName("alias");
+      for (const part of alias?.namedChildren ?? []) if (part.type === "identifier") bind(scope, identifier(part), node, unknownTarget);
+    }
+
     let value: Node | null = null;
     let valueRegion: ValueRegion | undefined;
     if (node.type === "variable_declarator") {

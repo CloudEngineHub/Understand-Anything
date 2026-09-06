@@ -375,7 +375,7 @@ export class Greeter {
       expect(strict.status).toBe("succeeded");
       expect(strict.structure).toEqual(plugin.analyzeFile("test.ts", code));
       expect(strict.structure?.classes[0].methods).toEqual(["run"]);
-      expect(strict.symbolEvidence?.possible).toContainEqual(expect.objectContaining({ owner: "A", name: "callback" }));
+      expect(strict.symbolEvidence?.coverage.gaps).toContainEqual(expect.objectContaining({ scope: { kind: "class", name: "A" }, name: "callback" }));
     });
 
     it.each(["test.js", "test.jsx", "test.ts", "test.tsx"])("exposes unresolved computed and escaped names in %s", (filePath) => {
@@ -397,12 +397,12 @@ export class Greeter {
       ]) {
         const result = plugin.analyzeFileStrict(filePath, code);
         expect(result.status).toBe("succeeded");
-        expect(result.symbolEvidence?.possible.length).toBeGreaterThan(0);
+        expect([...(result.symbolEvidence?.effects ?? []), ...(result.symbolEvidence?.coverage.gaps ?? [])].length).toBeGreaterThan(0);
       }
       expect(plugin.analyzeFileStrict(filePath, String.raw`function keep(r\u0075n) { return r\u0075n; }`)
-        .symbolEvidence?.possible).toEqual([]);
+        .symbolEvidence?.effects).toEqual([]);
       expect(plugin.analyzeFileStrict(filePath, 'class A { keep() { return this["x" + "y"]; } }')
-        .symbolEvidence?.possible).toEqual([]);
+        .symbolEvidence?.effects).toEqual([]);
     });
   });
 
