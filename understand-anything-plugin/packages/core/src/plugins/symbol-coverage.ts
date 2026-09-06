@@ -18,8 +18,16 @@ const NON_DECLARATION_NAMES = new Set(["export_specifier", "import_specifier", "
 const OPAQUE_DECLARATIONS = new Set(["macro_invocation", "preproc_call", "preproc_function_def"]);
 export const COVERAGE_LANGUAGES = new Set(["javascript", "typescript", "tsx", "ruby", "python", "go", "rust", "cpp"]);
 
-export function declarationGap(node: Node, scope: SymbolScope): SymbolEvidenceEntry | null {
+export function declarationGap(node: Node, scope: SymbolScope, receiver: SymbolScope): SymbolEvidenceEntry | null {
   const range: [number, number] = [node.startPosition.row + 1, node.endPosition.row + 1];
+  // TypeScript parameter properties have both parameter-binding and class-
+  // member roles. Their declaration target is the indexed receiver scope.
+  if (["required_parameter", "optional_parameter"].includes(node.type)
+    && node.children.some(child => ["accessibility_modifier", "readonly", "override_modifier", "override"].includes(child.type))) {
+    return { kind: "callable", scope: receiver,
+      name: declarationName(node.childForFieldName("pattern") ?? declarationKey(node)), lineRange: range,
+      reason: "Parameter-property callability is not covered by structural extraction" };
+  }
   if (OPAQUE_DECLARATIONS.has(node.type)) return { kind: null, scope: UNKNOWN_SCOPE, name: null,
     lineRange: range, reason: `Declaration expansion is not verified: ${node.type}` };
   const name = declarationKey(node);

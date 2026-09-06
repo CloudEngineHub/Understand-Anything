@@ -340,4 +340,24 @@ describe('scoped symbol evidence contract', () => {
     expect(state.after.symbolEvidence.coverage.gaps).toContainEqual(expect.objectContaining({scope: {kind: 'unknown'}}));
   });
 
+  it.each(['ts', 'tsx'])('distinguishes %s parameter properties from ordinary parameters and other owners', extension => {
+    for (const modifier of ['public', 'protected', 'private', 'readonly', 'public readonly']) {
+      for (const binding of ['run = () => {}', 'run?: () => void', 'other = () => {}']) {
+        for (const owner of ['A', 'B']) {
+          const code = `class A { keep() {} } class ${owner} { constructor(${modifier} ${binding}) {} }`;
+          const result = classify(extension, code).result.missing[0];
+          expect(result.status).toBe(owner === 'A' && binding.startsWith('run') ? 'unknown' : 'deleted');
+          if (result.status === 'unknown') expect(result.evidence).toContainEqual(expect.objectContaining({
+            name: 'run', scope: {kind: 'class', name: 'A'},
+            reason: 'Parameter-property callability is not covered by structural extraction',
+          }));
+        }
+      }
+    }
+    expect(classify(extension, 'class A { constructor(run = () => {}) {} keep() {} }')
+      .result.missing[0].status).toBe('deleted');
+    expect(classify(extension, 'class B { static Nested = class { constructor(public run = () => {}) {} } }')
+      .result.missing[0].status).toBe('deleted');
+  });
+
 });

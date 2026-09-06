@@ -97,7 +97,7 @@ export function collectSymbolEvidence(root: Node, structure: StructuralAnalysis,
   };
   const visit = (node: Node) => {
     const owner = scopes.declaration(node);
-    const gap = declarationGap(node, owner);
+    const gap = declarationGap(node, owner, scopes.receiver(node));
     if (gap) coverage.gaps.push(gap);
     const declared = declarationKey(node);
     const declaredName = declared?.type === "computed_property_name" ? literal(declared.namedChildren[0]) : declarationName(declared);
