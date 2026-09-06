@@ -8,6 +8,7 @@ import type { PluginRegistry } from "./plugins/registry.js";
 
 export interface FunctionFingerprint {
   name: string;
+  owner?: string | null;
   params: string[];
   returnType?: string;
   exported: boolean;
@@ -95,6 +96,7 @@ export function extractFileFingerprint(
 
   const functions: FunctionFingerprint[] = analysis.functions.map((fn) => ({
     name: fn.name,
+    ...(fn.owner !== undefined ? { owner: fn.owner } : {}),
     params: [...fn.params],
     returnType: fn.returnType,
     exported: exportedNames.has(fn.name),
@@ -158,7 +160,24 @@ export function compareFingerprints(
     };
   }
 
+  // A null receiver is incomplete evidence, not a stable identity. Any content
+  // change must reach the source validator even if other signatures match.
+  if ([...oldFp.functions, ...newFp.functions].some(fn => fn.owner === null)) {
+    return {
+      filePath: newFp.filePath,
+      changeLevel: "STRUCTURAL",
+      details: ["unresolved function ownership — conservative classification"],
+    };
+  }
+
   // Compare function signatures
+  // Receiver changes matter even when the type is declared in another file.
+  // Also conservatively reanalyze changed files with older ownerless evidence.
+  const ownership = (functions: FunctionFingerprint[]) => functions
+    .map(fn => JSON.stringify([fn.name, fn.owner])).sort();
+  if (JSON.stringify(ownership(oldFp.functions)) !== JSON.stringify(ownership(newFp.functions))) {
+    details.push("function ownership changed");
+  }
   const oldFuncNames = new Set(oldFp.functions.map((f) => f.name));
   const newFuncNames = new Set(newFp.functions.map((f) => f.name));
 

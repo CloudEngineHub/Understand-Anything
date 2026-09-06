@@ -1,9 +1,16 @@
 import { describe, it, expect, afterEach } from 'vitest';
+
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+
+// This synchronous subprocess suite can exceed 60 seconds on Windows. Yield
+// between cases so Vitest can service onTaskUpdate replies while tests run.
+afterEach(async () => {
+  await new Promise(resolve => setImmediate(resolve));
+});
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = resolve(__dirname, '../../../understand-anything-plugin/skills/understand/extract-import-map.mjs');
