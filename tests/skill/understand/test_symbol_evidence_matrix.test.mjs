@@ -51,7 +51,7 @@ describe('scoped symbol evidence contract', () => {
     const status = possibleMatch && owner !== 'B' ? 'unknown' : 'deleted';
     expect(outcome.result.missing[0].status).toBe(status);
     if (status === 'unknown') {
-      expect(outcome.result.missing[0].evidence).toContainEqual(expect.objectContaining({ owner: owner === 'target' ? null : owner }));
+      expect(outcome.result.missing[0].evidence).toContainEqual(expect.objectContaining({ scope: owner === 'target' ? {kind: 'unknown'} : {kind: 'class', name: owner} }));
     }
   });
 
@@ -287,4 +287,57 @@ describe('scoped symbol evidence contract', () => {
       beforeSource: 'class A\n def run=(value); end\nend', name: 'A.run=',
     }).result.missing[0].status).toBe('unknown');
   });
+  it.each(['ts', 'tsx', 'js', 'jsx'])('keeps nested/local %s scope composition independent of unrelated names', extension => {
+    const outerForms = [body => `class B { ${body} }`, body => `const B = class { ${body} };`,
+      body => `const B = class Named { ${body} };`, body => `const B = wrap(class Named { ${body} });`];
+    for (const outer of outerForms) for (const inner of ['class', 'class A', 'class B']) {
+      const code = outer(`static Nested = ${inner} { run() {} };`) + ' function keep() {}';
+      expect(classify(extension, code).result.missing[0].status).toBe('deleted');
+    }
+    for (const internal of ['A', 'B', '']) {
+      const code = `class A { keep() {} } class B {} const C = class ${internal} {}; Object.defineProperty(B.prototype, "run", {});`;
+      expect(classify(extension, code).result.missing[0].status).toBe('deleted');
+    }
+    expect(classify(extension, 'function f() { class B {}; Object.defineProperty(B.prototype, "run", {}); }')
+      .result.missing[0].status).toBe('deleted');
+    expect(classify(extension, 'function f() { B = class Named { run() {} }; let B; } function keep() {}')
+      .result.missing[0].status).toBe('deleted');
+  });
+
+  it.each([
+    ['ts', 'for (const B of items) { Object.defineProperty(B.prototype, "run", {}); }'],
+    ['ts', 'try {} catch (B) { Object.defineProperty(B.prototype, "run", {}); }'],
+    ['py', 'for B in items: setattr(B, "run", value)'],
+    ['py', 'with lock() as B: setattr(B, "run", value)'],
+    ['py', 'try: pass\nexcept Exception as B: setattr(B, "run", value)'],
+  ])('an unresolved %s binding cannot inherit an outer class identity', (extension, code) => {
+    expect(classify(extension, shells[extension] + code).result.missing[0].status).toBe('unknown');
+  });
+
+  it('treats missing, malformed and unknown coverage profiles as unavailable evidence', () => {
+    const state = classify('ts', shells.ts);
+    for (const coverage of [undefined, {profile: 'future', gaps: []}, {profile: 'structural-declarations-v1', gaps: [null]}]) {
+      expect(compareFileSymbols(state.previous, state.current, state.before, {
+        ...state.after, symbolEvidence: {...state.after.symbolEvidence, coverage},
+      }).missing[0].status).toBe('unknown');
+    }
+  });
+
+  it('reports an unextracted declaration as a coverage gap rather than runtime evidence', () => {
+    const state = classify('ts', 'function* run() {} function keep() {}', {
+      beforeSource: 'function run() {}', name: 'run',
+    });
+    expect(state.after.symbolEvidence.coverage.gaps).toContainEqual(expect.objectContaining({name: 'run'}));
+    expect(state.result.missing[0].status).toBe('unknown');
+    expect(state.result.missing[0].evidence).toContainEqual(expect.objectContaining({name: 'run', reason: 'Callable declaration is not covered by structural extraction'}));
+  });
+
+  it('requires an audited coverage adapter even when a grammar parses successfully', () => {
+    const state = classify('java', 'class A { void keep() {} }', {
+      beforeSource: 'class A { void run() {} }',
+    });
+    expect(state.result.missing[0].status).toBe('unknown');
+    expect(state.after.symbolEvidence.coverage.gaps).toContainEqual(expect.objectContaining({scope: {kind: 'unknown'}}));
+  });
+
 });

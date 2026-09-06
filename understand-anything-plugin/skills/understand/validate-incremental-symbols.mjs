@@ -55,29 +55,41 @@ function symbolKey(symbol) {
   return JSON.stringify([symbol.kind, symbol.owner, symbol.name]);
 }
 
+function validScope(scope) {
+  return scope && (['file', 'unknown'].includes(scope.kind)
+    || scope.kind === 'class' && typeof scope.name === 'string' && scope.name.length > 0
+    || scope.kind === 'local' && Number.isInteger(scope.id));
+}
+function validRange(range) {
+  return Array.isArray(range) && range.length === 2 && range.every(Number.isInteger)
+    && range[0] > 0 && range[1] >= range[0];
+}
 function validSupplement(evidence) {
   const supplement = evidence?.symbolEvidence;
-  return supplement?.version === 1 && Array.isArray(supplement.possible)
-    && Array.isArray(supplement.functions)
-    && supplement.functions.every(fn => fn && typeof fn.name === 'string' && (fn.owner === null || typeof fn.owner === 'string')
-      && Array.isArray(fn.lineRange) && fn.lineRange.length === 2 && fn.lineRange.every(Number.isInteger))
-    && supplement.possible.every(item => item && [null, 'callable', 'class'].includes(item.kind)
-      && (item.owner === null || typeof item.owner === 'string')
-      && (item.name === null || typeof item.name === 'string')
-      && typeof item.reason === 'string' && Array.isArray(item.lineRange)
-      && item.lineRange.length === 2 && item.lineRange.every(Number.isInteger)
-      && (item.nameSuffix === undefined || typeof item.nameSuffix === 'string'));
+  const validEntry = item => item && [null, 'callable', 'class'].includes(item.kind)
+    && validScope(item.scope) && (item.name === null || typeof item.name === 'string')
+    && typeof item.reason === 'string' && validRange(item.lineRange)
+    && (item.nameSuffix === undefined || typeof item.nameSuffix === 'string');
+  const validDeclaration = item => item && typeof item.name === 'string'
+    && validScope(item.scope) && validRange(item.lineRange);
+  return supplement?.version === 2 && Array.isArray(supplement.effects) && supplement.effects.every(validEntry)
+    && Array.isArray(supplement.functions) && supplement.functions.every(validDeclaration)
+    && Array.isArray(supplement.classes) && supplement.classes.every(validDeclaration)
+    && supplement.coverage?.profile === 'structural-declarations-v1'
+    && Array.isArray(supplement.coverage.gaps) && supplement.coverage.gaps.every(validEntry);
 }
-
-function compatibleEvidence(evidence, symbol) {
-  return evidence.symbolEvidence.possible.filter(item => {
+function scopeOwner(scope) {
+  return scope.kind === 'class' ? scope.name : scope.kind === 'file' ? '' : null;
+}
+function compatibleEvidence(records, symbol) {
+  return records.filter(item => {
+    if (item.scope.kind === 'local') return false;
     if (item.kind !== null && item.kind !== symbol.kind) return false;
-    if (item.owner !== null && qualifiedName(item.owner) !== qualifiedName(symbol.owner)) return false;
-    // These are actual parser/runtime names, not graph-ID spelling hints.
-    // In particular, a private #run is distinct from the literal key .run.
+    const owner = scopeOwner(item.scope);
+    if (item.scope.kind !== 'unknown' && qualifiedName(owner) !== qualifiedName(symbol.owner)) return false;
+    // Actual source names are not graph-ID spelling hints.
     const names = [symbol.name];
-    // An unresolved receiver may denote singleton/qualified method scopes.
-    if (item.owner === null) names.push(names[0].split('.').at(-1));
+    if (item.scope.kind === 'unknown') names.push(names[0].split('.').at(-1));
     if (item.name !== null && !names.includes(item.name)) return false;
     return !item.nameSuffix || names.some(name => name.endsWith(item.nameSuffix));
   });
@@ -93,7 +105,7 @@ function sourceSymbols(evidence) {
   // Supplementary identities come from AST scope, never guessed by line-range
   // containment (which cannot distinguish same-line free functions/methods).
   for (const fn of evidence.symbolEvidence.functions) {
-    symbols.push({ kind: 'callable', owner: fn.owner, name: fn.name, lineRange: fn.lineRange });
+    if (fn.scope.kind !== 'local') symbols.push({ kind: 'callable', owner: scopeOwner(fn.scope), name: fn.name, lineRange: fn.lineRange });
   }
   for (const fn of functions.filter(fn => fn.owner === undefined)) {
     if (!evidence.symbolEvidence.functions.some(candidate => candidate.name === fn.name
@@ -102,7 +114,11 @@ function sourceSymbols(evidence) {
     }
   }
   for (const cls of classes) {
-    symbols.push({ kind: 'class', owner: '', name: cls.name, lineRange: cls.lineRange });
+    const declaration = evidence.symbolEvidence.classes.find(item => item.name === cls.name
+      && JSON.stringify(item.lineRange) === JSON.stringify(cls.lineRange));
+    if (declaration?.scope.kind === 'local') continue;
+    const classVerified = declaration?.scope.kind === 'file';
+    symbols.push({ kind: 'class', owner: classVerified ? '' : null, name: cls.name, lineRange: cls.lineRange });
     const used = new Map();
     for (const name of cls.methods) {
       const count = used.get(name) ?? 0;
@@ -114,7 +130,7 @@ function sourceSymbols(evidence) {
       if (classes.filter(other => other.name === cls.name).length === 1 && count < detailed.length) continue;
       const unknownOwner = symbols.some(symbol => symbol.kind === 'callable'
         && symbol.name === name && symbol.owner === null);
-      symbols.push({ kind: 'callable', owner: unknownOwner ? null : cls.name, name, lineRange: cls.lineRange });
+      symbols.push({ kind: 'callable', owner: unknownOwner || !classVerified ? null : cls.name, name, lineRange: cls.lineRange });
     }
   }
   return symbols;
@@ -190,13 +206,13 @@ export function compareFileSymbols(previous, current, baseEvidence, headEvidence
   const newMappings = newSymbols.map(node => resolveSymbol(node, current, headSource));
   const missing = [];
   const replacements = [];
-  const completeEvidence = validSupplement(baseEvidence) && validSupplement(headEvidence);
+  const evidenceValid = validSupplement(baseEvidence) && validSupplement(headEvidence);
   for (let index = 0; index < oldSymbols.length; index++) {
     const node = oldSymbols[index];
     if (hasPreservedIdentity(node, previous, current, sameRevision)) continue;
     const entry = { id: node.id, name: node.name, type: node.type, status: 'unknown', reason: '' };
     const old = oldMappings[index];
-    if (baseEvidence?.status === 'succeeded' && headEvidence?.status === 'succeeded' && !completeEvidence) {
+    if (baseEvidence?.status === 'succeeded' && headEvidence?.status === 'succeeded' && !evidenceValid) {
       entry.reason = 'Strict parser lacks valid scoped symbol evidence; rebuild the core package';
     } else if (!old || baseEvidence?.status !== 'succeeded' || headEvidence?.status !== 'succeeded') {
       entry.reason = 'Old symbol cannot be mapped uniquely, or source parsing is unavailable/failed';
@@ -233,11 +249,14 @@ export function compareFileSymbols(previous, current, baseEvidence, headEvidence
       } else if (headSource.some(symbol => symbol.kind === old.kind && symbol.name === old.name && symbol.owner !== null
         && qualifiedName(symbol.owner).replace(/\s+/g, '') === qualifiedName(old.owner).replace(/\s+/g, ''))) {
         entry.reason = 'Receiver formatting may describe the old identity; type equivalence is not verified';
-      } else if (!completeEvidence) {
+      } else if (!evidenceValid) {
         entry.reason = 'Strict parser lacks valid scoped symbol evidence; rebuild the core package';
       } else {
-        const uncertain = [...compatibleEvidence(baseEvidence, old).filter(item => item.reason === 'Unresolved declaration name'),
-          ...compatibleEvidence(headEvidence, old)];
+        const uncertain = [
+          ...compatibleEvidence(baseEvidence.symbolEvidence.coverage.gaps, old).filter(item => item.reason === 'Unresolved declaration name'),
+          ...compatibleEvidence(headEvidence.symbolEvidence.coverage.gaps, old),
+          ...compatibleEvidence(headEvidence.symbolEvidence.effects, old),
+        ];
         const reusedIndex = newSymbols.findIndex(candidate => candidate.id === node.id);
         if (uncertain.length) {
           entry.reason = 'Compatible source evidence prevents confirming deletion';
@@ -247,7 +266,7 @@ export function compareFileSymbols(previous, current, baseEvidence, headEvidence
           entry.reason = 'The old graph ID is reused by a different or unresolved source identity';
         } else {
           entry.status = 'deleted';
-          entry.reason = 'Both revisions parsed; old identity is absent with no compatible declaration uncertainty';
+          entry.reason = 'Old identity is absent under the declaration coverage profile, with no compatible gaps or effects';
         }
       }
     }

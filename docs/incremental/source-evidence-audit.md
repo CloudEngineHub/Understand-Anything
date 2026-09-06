@@ -67,3 +67,9 @@ The regression corpus remains useful, but it is not the design specification. Ad
 - Check the existing 20-to-1, equal-count, true-deletion, repaired-output and durable-byte publication cases against the new source model.
 
 Commit the scope model, evidence adapter/comparator and contract tests by module. Request one overall review only after these invariants and the existing publication suites pass. Evaluate review findings against this contract; a finding must be reproduced, and its claimed semantics must not automatically redefine the feature.
+
+## Implementation following this audit
+
+The three ancestry algorithms and string sentinel have been removed. `symbol-scopes.ts` now assigns the shared scope tree and value regions; its binding queries work independently of graph extraction. Version 2 evidence uses tagged scopes, separate coverage gaps and effects, and fails closed on missing/unsupported coverage. The matcher excludes known local scopes and checks compatible gaps/effects before authorizing deletion. Public graph schema, IDs and publication/retry boundaries are unchanged.
+
+Scope composition tests cover nested fields across declared/assigned/wrapped classes, internal-name alpha-renaming, local installers, shadowing and declaration-order changes. Integration tests retain the original deletion/omission distinctions and add coverage-profile failures. The historical defects above remain recorded as the reason for the replacement, not as descriptions of the new model.
