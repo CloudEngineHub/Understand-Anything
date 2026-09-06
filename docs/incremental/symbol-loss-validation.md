@@ -11,11 +11,11 @@ The source-evidence layer mixed structural declarations, runtime-installed names
 ## Decision rules
 
 1. A preserved graph descriptor must keep its symbol kind/name and explicit class ownership. Unowned callables require source identity verification across commits.
-2. Source identities are `(path, kind, owner, name)`. Locations disambiguate within a revision; they are not cross-revision identity. Duplicate source identities and competing graph mappings remain unknown.
+2. Source identities are `(path, kind, owner, name)`. Ownership comes from extractor receiver metadata or AST scope; same-line containment is never used to guess a receiver. Locations disambiguate within a revision; they are not cross-revision identity. Duplicate source identities and competing graph mappings remain unknown.
 3. A unique current declaration plus a unique current graph binding preserves the old symbol. A declaration without a matching graph node reports `still-present`.
 4. Missing identities become `unknown` if parsing, baseline identity, evidence version, or current ID ownership cannot be verified. Empty extraction never proves deletion.
-5. Supplemental evidence describes possible declarations using `kind`, `owner`, `name`, optional name suffix, location and reason. A null field is explicitly unknown, never an empty/free scope. Only evidence compatible with the missing identity prevents deletion. Ordinary reads, strings and parameter names are not declarations.
-6. Static installers preserve exact names and owners (including Ruby readers versus writers). Dynamic keys have unknown names; unresolved receivers have unknown owners; arbitrary evaluation/installer aliases may require file-wide uncertainty. The gate does not execute code or restore old semantic data.
+5. Supplemental evidence describes possible declarations using `kind`, `owner`, `name`, optional name suffix, location and reason. A null field is explicitly unknown, never an empty/free scope. Only evidence compatible with the missing identity prevents deletion. Ordinary reads, strings and parameter names are not declarations. Literal symbol names are not normalized as graph-ID delimiters (for example, #run differs from .run).
+6. Verified standard installers preserve exact names and owners (including Ruby readers versus writers). Dynamic keys have unknown names; unresolved, shadowed or reassigned receivers have unknown owners; arbitrary evaluation/installer aliases or shadowed installer APIs may require file-wide uncertainty. The gate does not execute code or restore old semantic data.
 7. If the uniquely mapped old identity is absent and no compatible uncertainty remains, report `deleted`. A different class's same-name declaration is not that identity. Reusing the old graph ID for a different owner remains an identity conflict until the analyzer supplies distinct descriptors.
 8. Any unresolved entry blocks publication. One targeted repair may regenerate complete affected files. Failed repair leaves all three durable baseline files unchanged.
 
@@ -28,10 +28,16 @@ Each source transition is checked independently from publication mechanics.
 | Result | preserved, still-present but omitted, genuinely deleted, unknown |
 | Identity | stable ID; alternate ID; reused ID; same name across owners; free function versus method; duplicate/overloaded source identities; moved lines |
 | Supplemental names | exact same/different name; unknown name; reader/writer suffix; quoted/symbol spelling; escapes/interpolation |
-| Scope | same class; another class; free scope; unresolved receiver; bound installer alias; arbitrary evaluation |
+| Scope | same class; another class; free scope; unresolved/shadowed/reassigned receiver; unrelated local/import aliases; bound installer alias; arbitrary evaluation |
 | Syntax | JS/TS/JSX/TSX methods/properties/assignments/property APIs; Ruby accessors/method installers; Python attributes/installers; Go/Rust/C++ receiver extraction |
 | Negative evidence | unrelated string, parameter, normal read/call; static installer for another symbol; another owner's accessor |
 | Invalid evidence | unsupported parser, parse recovery/error, empty extraction, missing evidence version, ambiguous old mapping |
 | Publication | 20-to-1 omission; equal counts; merge/direct-finalize refusal; retry success/failure; stable prepare baseline; stale shards; deleted/excluded files; both data directories; current edge endpoint reuse |
 
 Tests must assert positive and negative outcomes for each recognizer rather than only adding the latest reported failure. Existing publication tests continue to verify actual persisted bytes and fresh edge identities. Full Linux/Windows CI and one overall Codex review follow the integrated local matrix.
+
+## Interpretation limits
+
+The comparison uses identities represented by the same parser/extractor in both revisions, rather than compiler-wide type equivalence or arbitrary execution. Unextractable old identities, opaque names/owners, and unsupported receiver qualification remain unknown. Supplemental fields describe potential callability when the extractor only provides a property inventory. A changed source identity can be a confirmed deletion even if another owner now has the same name; reusing the old graph ID for that different identity is separately rejected.
+
+The scoped matrix lives in `tests/skill/understand/test_symbol_evidence_matrix.test.mjs`; publication checks remain in `test_prepare_incremental.test.mjs`. Test fixtures simulate analyzer output, and do not measure live LLM omission frequency.

@@ -55,22 +55,51 @@ function symbolKey(symbol) {
   return JSON.stringify([symbol.kind, symbol.owner, symbol.name]);
 }
 
+function validSupplement(evidence) {
+  const supplement = evidence?.symbolEvidence;
+  return supplement?.version === 1 && Array.isArray(supplement.possible)
+    && Array.isArray(supplement.functions)
+    && supplement.functions.every(fn => fn && typeof fn.name === 'string' && (fn.owner === null || typeof fn.owner === 'string')
+      && Array.isArray(fn.lineRange) && fn.lineRange.length === 2 && fn.lineRange.every(Number.isInteger))
+    && supplement.possible.every(item => item && [null, 'callable', 'class'].includes(item.kind)
+      && (item.owner === null || typeof item.owner === 'string')
+      && (item.name === null || typeof item.name === 'string')
+      && typeof item.reason === 'string' && Array.isArray(item.lineRange)
+      && item.lineRange.length === 2 && item.lineRange.every(Number.isInteger)
+      && (item.nameSuffix === undefined || typeof item.nameSuffix === 'string'));
+}
+
+function compatibleEvidence(evidence, symbol) {
+  return evidence.symbolEvidence.possible.filter(item => {
+    if (item.kind !== null && item.kind !== symbol.kind) return false;
+    if (item.owner !== null && qualifiedName(item.owner) !== qualifiedName(symbol.owner)) return false;
+    // These are actual parser/runtime names, not graph-ID spelling hints.
+    // In particular, a private #run is distinct from the literal key .run.
+    const names = [symbol.name];
+    // An unresolved receiver may denote singleton/qualified method scopes.
+    if (item.owner === null) names.push(names[0].split('.').at(-1));
+    if (item.name !== null && !names.includes(item.name)) return false;
+    return !item.nameSuffix || names.some(name => name.endsWith(item.nameSuffix));
+  });
+}
+
 function sourceSymbols(evidence) {
-  if (evidence?.status !== 'succeeded' || !evidence.structure || !evidence.language) return [];
+  if (evidence?.status !== 'succeeded' || !evidence.structure || !evidence.language || !validSupplement(evidence)) return [];
   const { functions, classes } = evidence.structure;
   const symbols = [];
   for (const fn of functions) {
-    let owner = fn.owner;
-    if (owner === undefined) {
-      const possibleOwners = classes.filter(cls => cls.methods.includes(fn.name));
-      const enclosing = possibleOwners.filter(cls => fn.lineRange[0] >= cls.lineRange[0]
-        && fn.lineRange[1] <= cls.lineRange[1]);
-      // These extractors emit out-of-type method definitions; only their
-      // explicit receiver metadata can distinguish those from free functions.
-      owner = ['go', 'rust', 'cpp', 'c'].includes(evidence.language) ? null
-        : enclosing.length === 1 ? enclosing[0].name : enclosing.length ? null : '';
+    if (fn.owner !== undefined) symbols.push({ kind: 'callable', owner: fn.owner, name: fn.name, lineRange: fn.lineRange });
+  }
+  // Supplementary identities come from AST scope, never guessed by line-range
+  // containment (which cannot distinguish same-line free functions/methods).
+  for (const fn of evidence.symbolEvidence.functions) {
+    symbols.push({ kind: 'callable', owner: fn.owner, name: fn.name, lineRange: fn.lineRange });
+  }
+  for (const fn of functions.filter(fn => fn.owner === undefined)) {
+    if (!evidence.symbolEvidence.functions.some(candidate => candidate.name === fn.name
+      && JSON.stringify(candidate.lineRange) === JSON.stringify(fn.lineRange))) {
+      symbols.push({ kind: 'callable', owner: null, name: fn.name, lineRange: fn.lineRange });
     }
-    symbols.push({ kind: 'callable', owner, name: fn.name, lineRange: fn.lineRange });
   }
   for (const cls of classes) {
     symbols.push({ kind: 'class', owner: '', name: cls.name, lineRange: cls.lineRange });
@@ -89,6 +118,10 @@ function sourceSymbols(evidence) {
     }
   }
   return symbols;
+}
+
+function ambiguousOwner(symbol, source) {
+  return symbol.owner && source.filter(item => item.kind === 'class' && item.name === symbol.owner).length > 1;
 }
 
 function nodeNames(node) {
@@ -136,8 +169,8 @@ function resolveSymbol(node, graph, symbols) {
   const qualified = candidates.filter(symbol => symbol.owner
     && names.has(qualifiedName(`${symbol.owner}.${symbol.name}`)));
   if (qualified.length) candidates = qualified;
-  const owners = classOwners(node, graph).map(parent => parent.name);
-  if (owners.length) candidates = candidates.filter(symbol => owners.includes(symbol.owner));
+  const owners = classOwners(node, graph).map(parent => qualifiedName(parent.name));
+  if (owners.length) candidates = candidates.filter(symbol => symbol.owner !== null && owners.includes(qualifiedName(symbol.owner)));
   // Lines locate ownership within one revision only; they are never identity
   // across revisions. Do not use lines to guess among overloads/same-name classes.
   if (candidates.length > 1 && Array.isArray(node.lineRange)) {
@@ -157,18 +190,32 @@ export function compareFileSymbols(previous, current, baseEvidence, headEvidence
   const newMappings = newSymbols.map(node => resolveSymbol(node, current, headSource));
   const missing = [];
   const replacements = [];
+  const completeEvidence = validSupplement(baseEvidence) && validSupplement(headEvidence);
   for (let index = 0; index < oldSymbols.length; index++) {
     const node = oldSymbols[index];
     if (hasPreservedIdentity(node, previous, current, sameRevision)) continue;
     const entry = { id: node.id, name: node.name, type: node.type, status: 'unknown', reason: '' };
     const old = oldMappings[index];
-    if (!old || baseEvidence?.status !== 'succeeded' || headEvidence?.status !== 'succeeded') {
+    if (baseEvidence?.status === 'succeeded' && headEvidence?.status === 'succeeded' && !completeEvidence) {
+      entry.reason = 'Strict parser lacks valid scoped symbol evidence; rebuild the core package';
+    } else if (!old || baseEvidence?.status !== 'succeeded' || headEvidence?.status !== 'succeeded') {
       entry.reason = 'Old symbol cannot be mapped uniquely, or source parsing is unavailable/failed';
-    } else if (oldMappings.filter(symbol => symbol && symbolKey(symbol) === symbolKey(old)).length !== 1) {
-      entry.reason = 'Multiple old graph nodes map to the same source symbol';
+    } else if (baseEvidence.language === 'cpp' && old.name.includes('::')) {
+      entry.reason = 'Compound C++ qualification does not establish a verified receiver identity';
+    } else if ([old.name, old.owner].some(name => name.includes('\\') || name.includes('`') || name.startsWith('@')
+      || name.startsWith('r#') || name.normalize('NFKC') !== name)) {
+      entry.reason = 'Old source spelling does not establish a stable name or owner';
+    } else if (oldMappings.filter(symbol => symbol && symbolKey(symbol) === symbolKey(old)).length !== 1
+      || baseSource.filter(symbol => symbolKey(symbol) === symbolKey(old)).length !== 1) {
+      entry.reason = 'Old source identity or graph binding is ambiguous';
     } else {
       const matches = headSource.filter(symbol => symbolKey(symbol) === symbolKey(old));
       const graphMatches = newMappings.filter(symbol => symbol && symbolKey(symbol) === symbolKey(old));
+      if (ambiguousOwner(old, baseSource) || matches.some(symbol => ambiguousOwner(symbol, headSource))) {
+        entry.reason = 'Source contains ambiguous same-name declaring classes';
+        missing.push(entry);
+        continue;
+      }
       if (matches.length === 1 && graphMatches.length === 1) {
         const matchedIndex = newMappings.findIndex(symbol => symbol && symbolKey(symbol) === symbolKey(old));
         if (newSymbols[matchedIndex].id !== node.id) {
@@ -183,16 +230,25 @@ export function compareFileSymbols(previous, current, baseEvidence, headEvidence
         entry.reason = 'Current source has ambiguous same-name symbols';
       } else if (headSource.length === 0) {
         entry.reason = 'Empty structural extraction is not proof of deletion';
-      } else if (typeof baseEvidence.hasUnresolvedNames !== 'boolean' || typeof headEvidence.hasUnresolvedNames !== 'boolean') {
-        entry.reason = 'Strict parser lacks name-resolution evidence; rebuild the core package';
-      } else if (baseEvidence.hasUnresolvedNames || headEvidence.hasUnresolvedNames) {
-        entry.reason = 'Computed or escaped declaration names prevent confirming source deletion';
-      } else if (headSource.some(symbol => symbol.name === old.name)
-        || (headEvidence.leafTexts ?? []).some(text => qualifiedName(text.replace(/^['"`]|['"`]$/g, '')) === qualifiedName(old.name))) {
-        entry.reason = 'Name remains in source; moved or unsupported syntax cannot be ruled out';
+      } else if (headSource.some(symbol => symbol.kind === old.kind && symbol.name === old.name && symbol.owner !== null
+        && qualifiedName(symbol.owner).replace(/\s+/g, '') === qualifiedName(old.owner).replace(/\s+/g, ''))) {
+        entry.reason = 'Receiver formatting may describe the old identity; type equivalence is not verified';
+      } else if (!completeEvidence) {
+        entry.reason = 'Strict parser lacks valid scoped symbol evidence; rebuild the core package';
       } else {
-        entry.status = 'deleted';
-        entry.reason = 'Both revisions parsed; uniquely mapped old symbol and its name are absent from current source';
+        const uncertain = [...compatibleEvidence(baseEvidence, old).filter(item => item.reason === 'Unresolved declaration name'),
+          ...compatibleEvidence(headEvidence, old)];
+        const reusedIndex = newSymbols.findIndex(candidate => candidate.id === node.id);
+        if (uncertain.length) {
+          entry.reason = 'Compatible source evidence prevents confirming deletion';
+          entry.evidence = uncertain;
+        } else if (reusedIndex >= 0 && (!newMappings[reusedIndex]
+          || symbolKey(newMappings[reusedIndex]) !== symbolKey(old))) {
+          entry.reason = 'The old graph ID is reused by a different or unresolved source identity';
+        } else {
+          entry.status = 'deleted';
+          entry.reason = 'Both revisions parsed; old identity is absent with no compatible declaration uncertainty';
+        }
       }
     }
     missing.push(entry);

@@ -232,6 +232,28 @@ afterEach(async () => {
 });
 
 describe('incremental symbol publication gate', { timeout: 30_000 }, () => {
+  it.each([
+    ['rb', 'class A\n def run; end\nend\nclass B; end\n', 'class A\n def keep; end\nend\nclass B\n attr_reader :run\nend\n'],
+    ['ts', 'class A { run() {} }\nclass B {}\n', 'class A { keep() {} }\nclass B {}\nObject.defineProperty(B.prototype, "run", { value() {} });\n'],
+    ['py', 'class A:\n def run(self): pass\nclass B: pass\n', 'class A:\n def keep(self): pass\nclass B: pass\nsetattr(B, "run", lambda self: None)\n'],
+  ])('publishes a genuine deletion while another %s owner installs the same name', (extension, oldSource, newSource) => {
+    const path = `src/scopes.${extension}`;
+    const f = symbolFixture(2, { [path]: oldSource });
+    const previous = JSON.parse(f.persisted()[0]);
+    const method = { ...f.methodNodes[0], id: `function:${path}:A.run`, name: 'A.run', filePath: path };
+    previous.nodes.push(method);
+    writeFileSync(join(f.dataDir, 'knowledge-graph.json'), JSON.stringify(previous));
+    writeProjectFile(f.root, path, newSource);
+    const head = commit(f.root, 'delete one owner method');
+    prepare(f.root, f.baseCommit);
+    f.write('batch-1.json', { nodes: [previous.nodes.find(node => node.id === `file:${path}`)], edges: [] });
+    run(python, [mergeScript, f.root], f.root);
+    run(process.execPath, [finalizeScript, f.root], f.root);
+    const [graph, fingerprints, meta] = f.persisted().map(JSON.parse);
+    expect(graph.nodes.some(node => node.id === method.id)).toBe(false);
+    for (const baseline of [graph.project, fingerprints, meta]) expect(baseline.gitCommitHash).toBe(head);
+  });
+
   it.each(['attr :name', 'attr_writer "run"', 'attr_writer :"run"'])('publishes genuine Ruby reader deletion beside %s and an ordinary attr call', accessor => {
     const path = 'src/accessor.rb';
     const f = symbolFixture(2, { [path]: `class A\n def run; end\n ${accessor}\nend\nobj.attr\n` });

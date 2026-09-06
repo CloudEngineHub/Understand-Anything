@@ -22,7 +22,7 @@ describe('incremental symbol matching', () => {
     'attr_writer :name', 'attr_accessor :name', 'obj.attr', 'attr_writer "run"', 'attr_writer :"run"'])('allows unrelated Ruby deletion beside %s', accessor => {
     const before = parser.analyzeFileStrict('a.rb', 'class A\n def run; end\nend');
     const after = parser.analyzeFileStrict('a.rb', `class A\n def keep; end\n ${accessor}\nend`);
-    expect(after.hasUnresolvedNames).toBe(false);
+    expect(after.symbolEvidence?.version).toBe(1);
     expect(compareFileSymbols(graph([node('A.run')]), graph([]), before, after).missing[0].status).toBe('deleted');
   });
 
@@ -34,7 +34,7 @@ describe('incremental symbol matching', () => {
     const before = parser.analyzeFileStrict('a.rb', `class A\n def ${name}${name.endsWith('=') ? '(value)' : ''}; end\nend`);
     const after = parser.analyzeFileStrict('a.rb', `class A\n def keep; end\n ${accessor}\nend`);
     expect(before.status).toBe('succeeded');
-    expect(after.hasUnresolvedNames).toBe(false);
+    expect(after.symbolEvidence?.version).toBe(1);
     expect(compareFileSymbols(graph([node(`A.${name}`)]), graph([]), before, after).missing[0].status).toBe('unknown');
   });
 
@@ -51,7 +51,7 @@ describe('incremental symbol matching', () => {
     const after = parser.analyzeFileStrict(filePath, newSource);
     expect(before.status).toBe('succeeded');
     expect(after.status).toBe('succeeded');
-    expect(after.hasUnresolvedNames).toBe(true);
+    expect(after.symbolEvidence?.possible.length).toBeGreaterThan(0);
     const previous = graph([node('A.run', { filePath, id: `function:${filePath}:A.run` })]);
     expect(compareFileSymbols(previous, graph([]), before, after).missing[0].status).toBe('unknown');
     const ordinary = parser.analyzeFileStrict(filePath, extension === 'rb'
@@ -202,7 +202,6 @@ describe('incremental symbol matching', () => {
     ['escaped method assignment', String.raw`class A { keep() {} }; A.prototype.r\u0075n = function() {};`],
     ['escaped identifier', String.raw`class A { r\u0075n() {} keep() {} }`],
     ['escaped string method name', String.raw`class A { "r\u0075n"() {} keep() {} }`],
-    ['moved method', 'class B { run() {} }'],
   ])('treats %s as unknown, never deletion', (_label, code) => {
     expect(compare([node('A.run')], [], 'class A { run() {} }', code).missing[0].status).toBe('unknown');
   });
@@ -219,7 +218,7 @@ describe('incremental symbol matching', () => {
     expect(compare([node(escaped)], [], String.raw`class A { r\u0075n() {} }`, 'class A { run() {} keep() {} }')
       .missing[0].status).toBe('unknown');
     const outdated = { ...parse('class A { keep() {} }') };
-    delete outdated.hasUnresolvedNames;
+    delete outdated.symbolEvidence;
     const result = compareFileSymbols(graph([node('A.run')]), graph([]), parse('class A { run() {} }'), outdated);
     expect(result.missing[0].status).toBe('unknown');
   });
