@@ -261,6 +261,24 @@ describe('scoped symbol evidence contract', () => {
     }
   });
 
+  it.each(['ts', 'tsx', 'js', 'jsx'])('keeps unbound %s class expressions separate from external class bindings', extension => {
+    for (const expression of ['class A', 'class B', 'class']) {
+      for (const code of [`consume(${expression} { run() {} }); function keep() {}`,
+        `(${expression} { run() {} }); function keep() {}`]) {
+        expect(classify(extension, code).result.missing[0].status).toBe('deleted');
+        expect(classify(extension, code, { beforeSource: 'class A {}', name: 'A', oldExtra: {type: 'class'} })
+          .result.missing[0].status).toBe('deleted');
+      }
+    }
+    // An external binding through a wrapper/property is still unresolved.
+    for (const code of ['const A = consume(class B { run() {} }); function keep() {}',
+      'target.A = class B { run() {} }; function keep() {}']) {
+      expect(classify(extension, code).result.missing[0].status).toBe('unknown');
+      expect(classify(extension, code, { beforeSource: 'class A {}', name: 'A', oldExtra: {type: 'class'} })
+        .result.missing[0].status).toBe('unknown');
+    }
+  });
+
   it('distinguishes Ruby alias writer names, source names and global-variable aliases', () => {
     for (const declaration of ['keep run', ':"run=" :"keep="', '$run $keep']) {
       expect(classify('rb', `${shells.rb}class A\n alias ${declaration}\nend`).result.missing[0].status).toBe('deleted');

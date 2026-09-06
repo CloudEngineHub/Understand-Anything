@@ -63,6 +63,9 @@ function unwrap(node: Node | null): Node | null {
 function classExpression(node: Node): boolean {
   return node.type === "class" && node.childForFieldName("body")?.type === "class_body";
 }
+// A lexical expression scope is distinct from an unresolved external binding.
+// This internal label cannot be a JavaScript declaration name.
+const UNBOUND_CLASS_EXPRESSION = "<unbound-class-expression>";
 function expressionOwner(node: Node): string | null {
   let value = node;
   while (value.parent?.type === "parenthesized_expression") value = value.parent;
@@ -71,7 +74,13 @@ function expressionOwner(node: Node): string | null {
   if (parent?.type === "assignment_expression" && parent.childForFieldName("right")?.id === value.id) {
     return identifier(parent.childForFieldName("left"));
   }
-  return null;
+  // A surrounding assignment may expose the expression through a wrapper or
+  // property target. Without one, its local name is not a file-level binding.
+  for (let outer = parent; outer; outer = outer.parent) {
+    if (["variable_declarator", "assignment_expression"].includes(outer.type)) return null;
+    if (FUNCTION_NODES.has(outer.type) || ["expression_statement", "return_statement"].includes(outer.type)) break;
+  }
+  return UNBOUND_CLASS_EXPRESSION;
 }
 function lexicalOwner(node: Node): string | null {
   for (let parent = node.parent; parent; parent = parent.parent) {
@@ -300,7 +309,8 @@ export function collectSymbolEvidence(root: Node, structure: StructuralAnalysis,
     }
     // Escaped/opaque declaration spellings cannot establish absence. Ordinary
     // identifiers, references and string literals do not imply declarations.
-    if (declared && !objectMethod && !localDeclaration && (CLASS_NODES.has(node.type) || FUNCTION_NODES.has(node.type))
+    if (declared && !objectMethod && !localDeclaration && !classExpression(node)
+      && (CLASS_NODES.has(node.type) || FUNCTION_NODES.has(node.type))
       && declaredName === null) {
       add(declared, CLASS_NODES.has(node.type) ? "" : owner, null, "Unresolved declaration name",
         CLASS_NODES.has(node.type) ? "class" : "callable");
