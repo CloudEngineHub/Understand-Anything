@@ -29,7 +29,7 @@ Each source transition is checked independently from publication mechanics.
 | Identity | stable ID; alternate ID; reused ID; same name across owners; free function versus method; duplicate/overloaded source identities; moved lines |
 | Supplemental names | exact same/different name; unknown name; reader/writer suffix; quoted/symbol spelling; escapes/interpolation |
 | Scope | same class; another class; free scope; unresolved/shadowed/reassigned receiver; unrelated local/import aliases; bound installer alias; arbitrary evaluation |
-| Syntax | JS/TS/JSX/TSX methods/properties/assignments/property APIs; Ruby accessors/method installers; Python attributes/installers; Go/Rust/C++ receiver extraction |
+| Syntax | JS/TS/JSX/TSX methods/properties/class expressions/assignments/property APIs; Ruby accessors/alias declarations/method installers; Python attributes/installers; Go/Rust/C++ receiver extraction |
 | Negative evidence | unrelated string, parameter, normal read/call; static installer for another symbol; another owner's accessor |
 | Invalid evidence | unsupported parser, parse recovery/error, empty extraction, missing evidence version, ambiguous old mapping |
 | Publication | 20-to-1 omission; equal counts; merge/direct-finalize refusal; retry success/failure; stable prepare baseline; stale shards; deleted/excluded files; both data directories; current edge endpoint reuse |

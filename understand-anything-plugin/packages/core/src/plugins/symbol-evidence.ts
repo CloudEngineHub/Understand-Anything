@@ -60,9 +60,23 @@ function unwrap(node: Node | null): Node | null {
     && node.namedChildren.length === 1) node = node.namedChildren[0];
   return node;
 }
+function classExpression(node: Node): boolean {
+  return node.type === "class" && node.childForFieldName("body")?.type === "class_body";
+}
+function expressionOwner(node: Node): string | null {
+  let value = node;
+  while (value.parent?.type === "parenthesized_expression") value = value.parent;
+  const parent = value.parent;
+  if (parent?.type === "variable_declarator") return identifier(parent.childForFieldName("name"));
+  if (parent?.type === "assignment_expression" && parent.childForFieldName("right")?.id === value.id) {
+    return identifier(parent.childForFieldName("left"));
+  }
+  return null;
+}
 function lexicalOwner(node: Node): string | null {
   for (let parent = node.parent; parent; parent = parent.parent) {
     if (parent.type === "singleton_class") return null;
+    if (classExpression(parent)) return expressionOwner(parent);
     if (parent.parent && CLASS_NODES.has(parent.type)) return identifier(parent.childForFieldName("name"));
   }
   return "";
@@ -252,6 +266,12 @@ export function collectSymbolEvidence(root: Node, structure: StructuralAnalysis,
     const declaredName = declared?.type === "computed_property_name" ? literal(declared.namedChildren[0]) : declarationName(declared);
     const objectMethod = isJS && node.type === "method_definition" && node.parent?.type === "object";
     const localDeclaration = FUNCTION_NODES.has(node.type) && localBinding(node);
+    if (isJS && classExpression(node)) {
+      add(node, "", expressionOwner(node), "Unextracted class expression", "class");
+    }
+    if (isJS && node.type === "method_definition" && node.parent?.parent && classExpression(node.parent.parent)) {
+      add(node, owner, declaredName, "Unextracted class expression method");
+    }
     if (node !== root && CLASS_NODES.has(node.type) && declaredName) {
       let qualifiedScope = false;
       for (let parent = node.parent; parent; parent = parent.parent) {
@@ -317,6 +337,9 @@ export function collectSymbolEvidence(root: Node, structure: StructuralAnalysis,
         }
       };
       if (target) inspect(target);
+    }
+    if (isRuby && node.type === "alias" && declared?.type !== "global_variable") {
+      add(node, owner, declarationName(declared), "Ruby alias declaration");
     }
     if (isRuby && node.type === "call") {
       const methodNode = node.childForFieldName("method");

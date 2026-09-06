@@ -239,4 +239,34 @@ describe('scoped symbol evidence contract', () => {
       beforeSource: `void ${qualified}() {}`, name: qualified.replace(/^::/, ''),
     }).result.missing[0].status).toBe('unknown');
   });
+
+  it.each(['ts', 'tsx', 'js', 'jsx'])('retains classes and methods rewritten as %s class expressions', extension => {
+    for (const binding of ['A', 'B']) for (const expression of ['class A', 'class B', 'class']) {
+      const code = `const ${binding} = ${expression} { run() {} }; function keep() {}`;
+      const status = binding === 'A' ? 'unknown' : 'deleted';
+      expect(classify(extension, code, { beforeSource: 'class A {}', name: 'A', oldExtra: {type: 'class'} })
+        .result.missing[0].status).toBe(status);
+      expect(classify(extension, code).result.missing[0].status).toBe(status);
+    }
+    expect(classify(extension, 'const A = (class Named { run() {} }); function keep() {}')
+      .result.missing[0].status).toBe('unknown');
+    expect(classify(extension, 'A = class Named { run() {} }; function keep() {}')
+      .result.missing[0].status).toBe('unknown');
+  });
+
+  it.each(['run keep', ':run :keep', ':"run" :"keep"', ':"r#{suffix}" :keep'])('scopes Ruby alias %s to its declaring class', declaration => {
+    for (const owner of ['A', 'B']) {
+      const code = `${shells.rb}class ${owner}\n alias ${declaration}\nend`;
+      expect(classify('rb', code).result.missing[0].status).toBe(owner === 'A' ? 'unknown' : 'deleted');
+    }
+  });
+
+  it('distinguishes Ruby alias writer names, source names and global-variable aliases', () => {
+    for (const declaration of ['keep run', ':"run=" :"keep="', '$run $keep']) {
+      expect(classify('rb', `${shells.rb}class A\n alias ${declaration}\nend`).result.missing[0].status).toBe('deleted');
+    }
+    expect(classify('rb', 'class A\n def keep; end\n alias :"run=" :"keep="\nend', {
+      beforeSource: 'class A\n def run=(value); end\nend', name: 'A.run=',
+    }).result.missing[0].status).toBe('unknown');
+  });
 });
