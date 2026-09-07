@@ -20,6 +20,7 @@ Input/output live under the project's data dir (`.ua/`, or legacy
 import json
 import os
 import re
+import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
@@ -781,7 +782,12 @@ def link_tests(
 
 # ── Main merge + normalize ────────────────────────────────────────────────
 
-def merge_and_normalize(batches: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str]]:
+def merge_and_normalize(
+    batches: list[dict[str, Any]],
+    *,
+    current_edge_ids: set[int] | None = None,
+    dangling_candidates: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], list[str]]:
     """Merge batch results and normalize. Returns (assembled_graph, report_lines)."""
 
     # ── Pattern counters for "Fixed" report ──────────────────────────
@@ -874,14 +880,26 @@ def merge_and_normalize(batches: list[dict[str, Any]]) -> tuple[dict[str, Any], 
     # overwrite a `bidirectional` one (or vice versa); they're different
     # semantic relationships that the dashboard renders distinctly.
     edges_by_key: dict[tuple[str, str, str, str], dict] = {}
+    dangling_by_key: dict[tuple[str, str, str, str], dict] = {}
     for edge in all_edges:
         src = edge.get("source", "")
         tgt = edge.get("target", "")
         etype = edge.get("type", "")
         direction = normalize_direction(edge.get("direction"))
         edge["direction"] = direction
+        key = (src, tgt, etype, direction)
 
         if src not in node_ids or tgt not in node_ids:
+            # Preserve normalized CURRENT analyzer evidence before unresolved
+            # endpoints are discarded. Never collect edges from batch-existing.
+            if (
+                dangling_candidates is not None
+                and current_edge_ids is not None
+                and id(edge) in current_edge_ids
+            ):
+                previous = dangling_by_key.get(key)
+                if previous is None or _num(edge.get("weight", 0)) > _num(previous.get("weight", 0)):
+                    dangling_by_key[key] = dict(edge)
             missing = []
             if src not in node_ids:
                 missing.append(f"source '{src}'")
@@ -890,10 +908,12 @@ def merge_and_normalize(batches: list[dict[str, Any]]) -> tuple[dict[str, Any], 
             unfixable.append(f"Edge {src} → {tgt} ({etype}): dropped, missing {', '.join(missing)}")
             continue
 
-        key = (src, tgt, etype, direction)
         existing = edges_by_key.get(key)
         if existing is None or _num(edge.get("weight", 0)) > _num(existing.get("weight", 0)):
             edges_by_key[key] = edge
+
+    if dangling_candidates is not None:
+        dangling_candidates.extend(dangling_by_key.values())
 
     # ── Build report ─────────────────────────────────────────────────
     report: list[str] = []
@@ -1115,6 +1135,9 @@ def main() -> None:
 
     project_root = Path(sys.argv[1]).resolve()
     intermediate_dir = resolve_ua_dir(project_root) / "intermediate"
+    plan_path = intermediate_dir / "incremental-plan.json"
+    plan = json.loads(plan_path.read_text(encoding="utf-8")) if plan_path.exists() else {}
+    incremental = plan.get("action") in ("PARTIAL_UPDATE", "ARCHITECTURE_UPDATE")
 
     if not intermediate_dir.is_dir():
         print(f"Error: {intermediate_dir} does not exist", file=sys.stderr)
@@ -1197,6 +1220,7 @@ def main() -> None:
     # merged graph with content the agent labeled incorrectly.
     unrecognized_set = set(unrecognized_batch_files)
     batches: list[dict[str, Any]] = []
+    current_edge_ids: set[int] = set()
     empty_batch_warnings: list[str] = []
     for f in batch_files:
         if f.name in unrecognized_set:
@@ -1204,6 +1228,8 @@ def main() -> None:
         batch = load_batch(f)
         if batch is not None:
             batches.append(batch)
+            if incremental and f.name != "batch-existing.json":
+                current_edge_ids.update(id(edge) for edge in batch.get("edges", []))
             n = len(batch.get("nodes", []))
             e = len(batch.get("edges", []))
             print(f"  {f.name}: {n} nodes, {e} edges", file=sys.stderr)
@@ -1224,7 +1250,11 @@ def main() -> None:
         sys.exit(1)
 
     # Merge and normalize
-    assembled, report = merge_and_normalize(batches)
+    dangling_candidates: list[dict[str, Any]] = []
+    assembled, report = merge_and_normalize(
+        batches, current_edge_ids=current_edge_ids if incremental else None,
+        dangling_candidates=dangling_candidates if incremental else None,
+    )
 
     # Surface missing multi-part files to the phase report (parallel to
     # unrecognized-filename handling below). Stderr lines emitted during
@@ -1290,6 +1320,26 @@ def main() -> None:
 
     size_kb = output_path.stat().st_size / 1024
     print(f"\nWritten to {output_path} ({size_kb:.0f} KB)", file=sys.stderr)
+
+    # The old symbols live outside batch-existing.json, which intentionally
+    # excludes reanalyzed files. Keep failed output as a diagnostic artifact,
+    # but return failure so the orchestrator repairs it before publication.
+    plan_path = intermediate_dir / "incremental-plan.json"
+    if plan_path.exists():
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        if plan.get("action") in ("PARTIAL_UPDATE", "ARCHITECTURE_UPDATE"):
+            candidate_path = intermediate_dir / "incremental-edge-candidates.json"
+            candidate_temp = candidate_path.with_name(f"{candidate_path.name}.tmp-{os.getpid()}")
+            candidate_temp.write_text(json.dumps({
+                "baseCommit": plan["baseCommit"],
+                "headCommit": plan["headCommit"],
+                "edges": dangling_candidates,
+            }, indent=2, ensure_ascii=False), encoding="utf-8")
+            candidate_temp.replace(candidate_path)
+            validator = Path(__file__).resolve().with_name("validate-incremental-symbols.mjs")
+            result = subprocess.run(["node", str(validator), str(project_root)], check=False)
+            if result.returncode != 0:
+                sys.exit(result.returncode)
 
 
 if __name__ == "__main__":

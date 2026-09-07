@@ -12,6 +12,9 @@ const hook = readFileSync(
   resolve(__dirname, '../../../understand-anything-plugin/hooks/auto-update-prompt.md'),
   'utf-8',
 );
+const analyzer = readFileSync(
+  resolve(__dirname, '../../../understand-anything-plugin/agents/file-analyzer.md'), 'utf-8',
+);
 
 describe('incremental execution contract', () => {
   it.each([skill, hook])('routes inventory and baseline updates through bundled helpers', content => {
@@ -37,5 +40,23 @@ describe('incremental execution contract', () => {
     expect(skill).toContain('`FULL_UPDATE`');
     expect(skill).toContain('With explicit `--review`');
     expect(skill).toContain('jump to the `--review` graph-reviewer path in Phase 6');
+  });
+
+  it.each([skill, hook])('requires deterministic symbol checking and one targeted repair', content => {
+    expect(content).toContain('incremental-symbol-baseline.json');
+    expect(content).toContain('validate-incremental-symbols.mjs');
+    expect(content).toContain('incremental-symbol-report.json');
+    expect(content).toContain('prepare-symbol-retry.mjs');
+    expect(content).toContain('incremental-symbol-retry.json');
+    expect(content).toContain('previousSymbols');
+    expect(content).toContain('missingSymbols');
+    expect(content).toContain('independently reruns the shared symbol');
+  });
+
+  it('keeps significance filtering for new symbols but requires accounting for old methods', () => {
+    expect(analyzer).toContain('New symbols continue to use the filter above');
+    expect(analyzer).toContain('classes[].methods');
+    expect(analyzer).toContain('check the complete `previousSymbols` checklist');
+    expect(analyzer).toContain('explicitly report an error with its ID/name');
   });
 });

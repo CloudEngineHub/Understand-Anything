@@ -11,6 +11,7 @@
  *   - changed-files.json
  *   - fingerprint-patch.json
  *   - incremental-baseline.json (retry-safe copy of the pre-update scan)
+ *   - incremental-symbol-baseline.json (old nodes for reanalyzed files)
  *   - batch-existing.json (PARTIAL/ARCHITECTURE only)
  *
  * It also atomically refreshes scan-result.json (except for a commit whose
@@ -122,6 +123,8 @@ function clearIncrementalScratch(intermediateDir) {
     'batches.json',
     'layers.json',
     'tour.json',
+    'incremental-symbol-report.json',
+    'incremental-edge-candidates.json',
   ]);
   for (const name of readdirSync(intermediateDir)) {
     if (exactNames.has(name) || /^batch-\d+(?:-part-\d+)?\.json$/.test(name)) {
@@ -509,8 +512,17 @@ async function main() {
   const baselineScan = existingSnapshot?.baseCommit === baseCommit
     ? existingSnapshot.scan
     : oldScan;
-  if (existingSnapshot?.baseCommit !== baseCommit) {
-    atomicWriteJson(baselineSnapshotPath, { baseCommit, scan: oldScan });
+  const baselineGraph = existingSnapshot?.baseCommit === baseCommit && existingSnapshot.graph
+    ? existingSnapshot.graph
+    : graph;
+  if (!Array.isArray(baselineGraph.nodes) || !Array.isArray(baselineGraph.edges)) {
+    throw new Error('A valid previous graph is required for incremental symbol protection');
+  }
+  if (existingSnapshot?.baseCommit !== baseCommit || !existingSnapshot.graph) {
+    if (graph?.project?.gitCommitHash && graph.project.gitCommitHash !== baseCommit) {
+      throw new Error('Previous graph commit does not match the requested base and no symbol baseline exists; cannot safely retry');
+    }
+    atomicWriteJson(baselineSnapshotPath, { baseCommit, scan: baselineScan, graph: baselineGraph });
   }
   // A failed prior attempt can leave complete or split analyzer batches behind.
   // Remove only known internal scratch names before planning the retry so the
@@ -530,15 +542,9 @@ async function main() {
   }
   const currentInventory = sorted(currentScan.files.map(file => file.path));
   const currentInventorySet = new Set(currentInventory);
-  // If a previous attempt saved the graph but failed before fingerprints/meta,
-  // its project hash is already HEAD. Do not let that partially advanced graph
-  // redefine the previous inventory; the preserved scan + old fingerprints are
-  // the retry baseline. A graph still tied to baseCommit remains useful for
-  // recovering files omitted by an older scan/fingerprint format.
-  const graphMatchesUncommittedHead =
-    graph?.project?.gitCommitHash === headCommit && headCommit !== baseCommit;
-  const inventoryGraph = graphMatchesUncommittedHead ? {} : graph;
-  const oldInventory = inventoryFrom(baselineScan, inventoryGraph, oldFingerprints);
+  // The durable graph may have advanced before a failed fingerprints/meta save.
+  // Use only the preserved graph, even when retrying against a different HEAD.
+  const oldInventory = inventoryFrom(baselineScan, baselineGraph, oldFingerprints);
   const oldInventorySet = new Set(oldInventory);
   const trackedPaths = new Set(parseNulPaths(run(
     'git',
@@ -665,6 +671,33 @@ async function main() {
     reason: decision.reason,
   };
 
+  // Always derive this manifest from the immutable pre-update graph, including
+  // on repeated prepare calls after an unsuccessful merge/finalization.
+  const symbolFiles = filesToReanalyze.map(filePath => {
+    const nodes = baselineGraph.nodes.filter(node => normalizeRelativePath(node.filePath) === filePath);
+    const ids = new Set(nodes.map(node => node.id));
+    return {
+      filePath,
+      nodes,
+      edges: baselineGraph.edges.filter(edge => ids.has(edge.source) && ids.has(edge.target)),
+    };
+  });
+  atomicWriteJson(join(intermediateDir, 'incremental-symbol-baseline.json'), {
+    version: 1, baseCommit, headCommit, files: symbolFiles,
+  });
+  const retryPath = join(intermediateDir, 'incremental-symbol-retry.json');
+  const retry = readJson(retryPath);
+  if (retry && (retry.baseCommit !== baseCommit || retry.headCommit !== headCommit)) {
+    unlinkSync(retryPath);
+  } else if (retry) {
+    // Retain the attempt limit, but never import current-analysis candidates
+    // from a discarded batch generation into a fresh prepare run.
+    delete retry.inboundEdgeCandidates;
+    delete retry.replacedFiles;
+    delete retry.currentFiles;
+    atomicWriteJson(retryPath, retry);
+  }
+
   atomicWriteJson(join(intermediateDir, 'fingerprint-patch.json'), {
     version: '1.0.0',
     baseCommit,
@@ -679,7 +712,7 @@ async function main() {
     const pathsToReplace = new Set([...filesToReanalyze, ...deletedFiles]);
     atomicWriteJson(
       join(intermediateDir, 'batch-existing.json'),
-      pruneExistingGraph(graph, pathsToReplace, new Set(importAnalysisPaths)),
+      pruneExistingGraph(baselineGraph, pathsToReplace, new Set(importAnalysisPaths)),
     );
   }
   atomicWriteJson(join(intermediateDir, 'incremental-plan.json'), plan);

@@ -246,6 +246,10 @@ For significant functions and classes from the script output (code files only), 
 
 Skip trivial one-liners, type aliases, simple re-exports, and auto-generated boilerplate.
 
+**Incremental preservation overrides significance filtering for existing symbols.** If the prompt provides `previousSymbols`, reconcile every listed function, class, and method against current source, including methods in `classes[].methods` rather than just top-level `functions`. A symbol already in the graph that still exists MUST be emitted even if it has become short, private, or otherwise falls below the significance thresholds. New symbols continue to use the filter above. Match by file, kind, owning class, and name; use line ranges only to locate code within that revision. Preserve canonical IDs where the symbol identity is unchanged.
+
+Before writing output, check the complete `previousSymbols` checklist for every file. Emit all surviving symbols with newly derived summaries, tags, complexity, and edges. For confirmed deletions, omit the nodes and report the deleted IDs. If a checklist item cannot be accounted for (ambiguous ownership, unsupported syntax, parse failure, or incomplete source), explicitly report an error with its ID/name; do not claim successful completion or silently drop it. A `missingSymbols` repair prompt requires a complete replacement analysis of the affected files, including their other nodes and edges. Never copy the old semantic nodes/edges back merely to pass validation.
+
 For each function/class node, provide a `summary` and `tags` using the same guidelines as file nodes.
 
 ### Step 3 -- Create Edges

@@ -51,7 +51,7 @@ Read `filesToReanalyze` from the plan. It never contains deleted, ignored, cosme
     --changed-files="$UA_DIR/intermediate/changed-files.json"
   ```
 
-  Dispatch file-analyzer for those batches only, using `agents/file-analyzer.md` and the batch prompt contract from the `/understand` skill. Preserve each original batch index in its output filename. Retry a failed dispatch once; if it still fails, **STOP** without running the finalizer or advancing the baseline.
+  Dispatch file-analyzer for those batches only, using `agents/file-analyzer.md` and the batch prompt contract from the `/understand` skill. Include `previousSymbols` for each batch's files from `incremental-symbol-baseline.json`: old symbol IDs, names, types, paths, line ranges, and class containment. Existing symbols that still exist must survive significance filtering. Preserve each original batch index in its output filename. Retry a failed dispatch once; if it still fails, **STOP** without running the finalizer or advancing the baseline.
 
 ## Phase 2 — Merge
 
@@ -61,7 +61,25 @@ Run the deterministic merge in both empty and non-empty analyzer cases:
 python "$PLUGIN_ROOT/skills/understand/merge-batch-graphs.py" "$PROJECT_ROOT"
 ```
 
-It combines `batch-existing.json` with fresh batches and recovers imports from the refreshed `scan-result.json`, including `config:`, `schema:`, `service:`, and other valid whole-file nodes. Require `$UA_DIR/intermediate/assembled-graph.json`; on failure, report it and **STOP** without advancing fingerprints or meta.
+It combines `batch-existing.json` with fresh batches and recovers imports from the refreshed `scan-result.json`, including `config:`, `schema:`, `service:`, and other valid whole-file nodes. Require both a successful exit and `$UA_DIR/intermediate/assembled-graph.json`; failed candidates remain on disk for diagnosis.
+
+Merge runs `validate-incremental-symbols.mjs`, comparing the preserved old symbols with the candidate and base/current source. Read `incremental-symbol-report.json` for per-file counts, missing IDs/names, and still-present/deleted/unknown classifications. A same-size node set can still have missing symbols. Confirmed deletions are allowed; still-present or unknown omissions block publication.
+
+Merge also preserves normalized dangling edge candidates from fresh batches in `incremental-edge-candidates.json` before discarding unresolved endpoints. Every successful validation reconciles both endpoint IDs, including first-pass updates without a retry and repairs where omitted symbols return. This evidence excludes `batch-existing.json` and is cleared by fresh preparation.
+
+Current endpoint descriptors take precedence over baseline aliases when IDs are reused. Repair defers incoming edges outside the retained batch until their original HEAD identities are matched, preventing a reused ID from attaching an old current-analysis reference to a different symbol.
+
+If the report has `unresolvedFiles`, prepare one targeted symbol retry:
+
+```bash
+node "$PLUGIN_ROOT/skills/understand/prepare-symbol-retry.mjs" "$PROJECT_ROOT"
+```
+
+Dispatch only `batches[]` from `incremental-symbol-retry.json`, with the usual file-analyzer prompt and its supplied `files`, `batchIndex`, `batchImportData`, `neighborMap`, `previousSymbols`, and `missingSymbols`. Reanalyze those files completely. The helper preserves other merged results in `batch-0.json`, removes affected nodes and outgoing edges, and clears old numeric shards before repair. Current inbound edges from other files remain candidates until merge reconciles their replacement targets and drops dangling references. Rerun merge after this one repair. Never paste old nodes or semantic edges back into the candidate. The attempt is recorded for the base/head commits, even across repeated prepare calls.
+
+If the helper, repair dispatch, or second merge fails, **STOP** with diagnostics and leave `knowledge-graph.json`, `fingerprints.json`, and `meta.json` unchanged. Other merge failures without eligible unresolved files also stop immediately.
+
+Languages without a deterministic structural parser (including `.sh`, `.ps1`, and `.bat`) cannot have missing symbols automatically confirmed as deleted. Callables without explicit class containment also require source verification when their IDs/names are unchanged, regardless of whether class nodes were emitted; unverified identities block publication. These cases remain `unknown` and require manual investigation or parser support. Do not use supplemental LLM inspection or regex guesses to waive the gate.
 
 Do not dispatch assemble-reviewer or graph-reviewer for automatic updates.
 
@@ -80,7 +98,7 @@ Run:
 node "$PLUGIN_ROOT/skills/understand/finalize-incremental.mjs" "$PROJECT_ROOT"
 ```
 
-The finalizer performs deterministic graph/layer/tour validation, atomically saves `knowledge-graph.json`, patches changed fingerprints while preserving untouched entries, removes deleted fingerprints, and only then writes `meta.json`. A graph-save failure must never advance the fingerprint or commit baseline.
+The finalizer performs deterministic graph/layer/tour validation and independently reruns the shared symbol check on the exact graph before writing. It atomically saves `knowledge-graph.json`, patches changed fingerprints while preserving untouched entries, removes deleted fingerprints, and only then writes `meta.json`. A graph-save failure must never advance the fingerprint or commit baseline. If symbol loss is first detected here, follow the same one-retry procedure, rerun merge and any required architecture/tour phases, then finalize; an already-used or unsuccessful repair must stop with the old graph and baselines intact.
 
 Report:
 
