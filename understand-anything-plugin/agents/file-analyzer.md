@@ -88,6 +88,7 @@ Read `$UA_DIR/tmp/ua-file-extract-results-<batchIndex>.json`. The output format 
   "scriptCompleted": true,
   "filesAnalyzed": 5,
   "filesSkipped": ["path/to/binary.wasm"],
+  "filesUnreadable": [],
   "results": [
     {
       "path": "src/index.ts",
@@ -117,6 +118,8 @@ Read `$UA_DIR/tmp/ua-file-extract-results-<batchIndex>.json`. The output format 
   ]
 }
 ```
+
+**Read failures are not skips.** `filesSkipped` lists every batch file that produced no result, including benign cases (`.wasm`, `.sln`, `.xaml` — no registered parser). `filesUnreadable` is the subset that could not be read from disk at all (`[{ "path": ..., "code": "ENOENT" }]`). A non-empty `filesUnreadable` means the paths are wrong, not the code — most often a `projectRoot` that does not resolve. When it is non-empty the script also writes a note to stderr, and when *every* file in the batch is unreadable it exits non-zero (per Step 2, report that as a hard failure). Never treat an unreadable file as "unsupported language" and never emit a bare stub node for it: report the failure instead.
 
 **Non-code structural fields.** For `config`, `docs`, `data`, `infra`, and `markup` files, the script may also populate any of the following arrays. Treat each entry as a potential sub-file node and emit a corresponding `<prefix>:<path>:<name>` node in your output if it meets the significance filter:
 
