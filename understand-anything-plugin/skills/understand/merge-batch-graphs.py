@@ -118,9 +118,22 @@ _TEST_NAME_PATTERNS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     ".kt": ((), ("Test", "Tests")),
     ".scala": ((), ("Spec", "Suite", "Test", "Tests")),
     ".cs": ((), ("Test", "Tests")),
+    ".swift": ((), ("Tests", "Test", "Spec")),
+    ".rs": (("test_",), ("_test",)),
+    ".rb": (("test_",), ("_test", "_spec")),
+    ".php": ((), ("Test",)),
     ".c": (("test_",), ("_test",)),
     ".cpp": (("test_",), ("_test",)),
     ".cc": (("test_",), ("_test",)),
+}
+
+# These language configs treat every source file below `tests/` as part of a
+# test target, even when the basename itself has no test marker.  JS/TS is
+# intentionally absent: files such as `__tests__/helpers.ts` remain helpers.
+_TEST_DIRECTORY_EXTENSIONS: frozenset[str] = frozenset({".swift", ".rs", ".php"})
+
+_EXACT_TEST_STEMS: dict[str, frozenset[str]] = {
+    ".rb": frozenset({"spec_helper"}),
 }
 
 
@@ -327,18 +340,28 @@ def _basename(path: str) -> str:
 
 
 def is_test_path(path: str) -> bool:
-    """Return True if `path` looks like a test file by basename convention.
+    """Return True if `path` looks like a test file by language convention.
 
-    Files inside `tests/`, `__tests__/`, `test/`, or `spec/` directories that
-    do NOT carry a recognized test extension are treated as helpers/fixtures
-    and classified as non-test (so `__tests__/helpers.ts` is not a test).
+    Most languages use basename markers. Swift, Rust, and PHP additionally
+    make `tests/` a test-source root. JS/TS files still require `.test` or
+    `.spec`, so `__tests__/helpers.ts` remains a non-test helper.
     """
     stem, ext = os.path.splitext(_basename(path))
+    ext = ext.lower()
 
     # JS/TS family: the test marker is an infix on the stem (foo.test.ts has
     # stem "foo.test", ext ".ts"), not a prefix/suffix on the stem itself.
     if ext in _JS_TS_TEST_EXTS:
         return stem.endswith(".test") or stem.endswith(".spec")
+
+    if ext in _TEST_DIRECTORY_EXTENSIONS and any(
+        segment.lower() == "tests" for segment in _path_segments(path)[:-1]
+    ):
+        return True
+
+    exact_stems = _EXACT_TEST_STEMS.get(ext)
+    if exact_stems is not None and stem in exact_stems:
+        return True
 
     patterns = _TEST_NAME_PATTERNS.get(ext)
     if patterns is None:
