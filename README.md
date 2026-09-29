@@ -40,12 +40,6 @@
   <img src="assets/hero.png" alt="Understand Anything — Turn any codebase into an interactive knowledge graph" width="800" />
 </p>
 
-<p align="center">
-  <strong>An open-source project from <a href="https://github.com/Egonex-AI">Egonex</a></strong>
-  <br />
-  <em>Originally created by <a href="https://github.com/Lum1104">Lum1104</a>.</em>
-</p>
-
 ---
 
 **You just joined a new team. The codebase is 200,000 lines of code. Where do you even start?**
