@@ -7,9 +7,9 @@
 </p>
 
 <p align="center">
-  <strong>Understand Anything. <a href="https://egonex.ai">Understand Anyone.</a></strong>
+  От команды Understand Anything: <a href="https://www.egonex.ai/invite/UNDERSTAND"><strong>знакомьтесь, Ego</strong></a> — персональный ИИ-агент, который создаёт ваш магазин и продаёт за вас.
   <br />
-  <em>ИИ должен помогать людям, а не заменять их.</em>
+  Вы создаёте, Ego продаёт. Бесплатно.
 </p>
 
 <p align="center">

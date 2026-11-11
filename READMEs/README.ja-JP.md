@@ -7,9 +7,9 @@
 </p>
 
 <p align="center">
-  <strong>Understand Anything. <a href="https://egonex.ai">Understand Anyone.</a></strong>
+  Understand Anything を手がけるチームから：<a href="https://www.egonex.ai/invite/UNDERSTAND"><strong>Ego をご紹介します</strong></a>。ストアを作り、あなたの代わりに売ってくれるパーソナルAIエージェントです。
   <br />
-  <em>AI は人を置き換えるのではなく、人を支えるためにあるべきです。</em>
+  作るのはあなた、売るのは Ego。無料で使えます。
 </p>
 
 <p align="center">
